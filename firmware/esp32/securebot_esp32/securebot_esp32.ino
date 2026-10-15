@@ -8,7 +8,7 @@
 //   speed <0-MAX_PWM>  PWM used by the legacy commands
 //
 // ESP32 -> Jetson
-//   U,<upper_ft>,<lower_ft>   every TELEMETRY_MS; -1 means "no reading"
+//   U,<left_ft>,<right_ft>   every TELEMETRY_MS; -1 means "no reading"
 //   S,<mode>,<leftPWM>,<rightPWM>,<avoidState>   every STATUS_MS
 //   I,<text>   information     E,<text>   error / safety event
 //
@@ -43,11 +43,11 @@ const int RIGHT_ENCODER_WHITE = 12;   // strapping pin, see firmware/esp32/READM
 const int LEFT_ENCODER_BLUE = 34;
 const int LEFT_ENCODER_WHITE = 35;
 
-// Ultrasonic 1 = "upper", ultrasonic 2 = "lower" (these names appear in the telemetry order).
-#define UPPER_TRIG 23
-#define UPPER_ECHO 19
-#define LOWER_TRIG 4
-#define LOWER_ECHO 17
+// Ultrasonic 1 = left, ultrasonic 2 = right (this is also the telemetry order).
+#define ULTRA_LEFT_TRIG 23
+#define ULTRA_LEFT_ECHO 19
+#define ULTRA_RIGHT_TRIG 4
+#define ULTRA_RIGHT_ECHO 17
 
 // ==================== SETTINGS ====================
 const int MAX_PWM = 150;              // hard cap on any wheel PWM, every command path
@@ -81,11 +81,11 @@ unsigned long lastCommandMs = 0;
 int avoidState = 0;                // 0 idle, 1 reverse, 2 rotate, 3 settle
 unsigned long avoidStartMs = 0;
 
-float upperFeet = -1;
-float lowerFeet = -1;
-int upperCloseReads = 0;
-int lowerCloseReads = 0;
-bool sampleUpperNext = true;
+float leftUltraFeet = -1;
+float rightUltraFeet = -1;
+int leftUltraCloseReads = 0;
+int rightUltraCloseReads = 0;
+bool sampleLeftNext = true;
 unsigned long lastSensorMs = 0;
 
 unsigned long lastTelemetryMs = 0;
@@ -122,10 +122,10 @@ void setup() {
   pinMode(RIGHT_IN_B, OUTPUT);
   applyMotors(0, 0);
 
-  pinMode(UPPER_TRIG, OUTPUT);
-  pinMode(UPPER_ECHO, INPUT);
-  pinMode(LOWER_TRIG, OUTPUT);
-  pinMode(LOWER_ECHO, INPUT);
+  pinMode(ULTRA_LEFT_TRIG, OUTPUT);
+  pinMode(ULTRA_LEFT_ECHO, INPUT);
+  pinMode(ULTRA_RIGHT_TRIG, OUTPUT);
+  pinMode(ULTRA_RIGHT_ECHO, INPUT);
 
   Serial.begin(115200);
   Serial.println("I,SecureBot ESP32 fw 2.0 ready");
@@ -244,16 +244,16 @@ void updateSensors() {
   }
   lastSensorMs = now;
 
-  if (sampleUpperNext) {
-    upperFeet = readUltrasonicFeet(UPPER_TRIG, UPPER_ECHO);
-    bool close = validDistance(upperFeet) && upperFeet < STOP_DISTANCE_FEET;
-    upperCloseReads = close ? min(upperCloseReads + 1, 100) : 0;
+  if (sampleLeftNext) {
+    leftUltraFeet = readUltrasonicFeet(ULTRA_LEFT_TRIG, ULTRA_LEFT_ECHO);
+    bool close = validDistance(leftUltraFeet) && leftUltraFeet < STOP_DISTANCE_FEET;
+    leftUltraCloseReads = close ? min(leftUltraCloseReads + 1, 100) : 0;
   } else {
-    lowerFeet = readUltrasonicFeet(LOWER_TRIG, LOWER_ECHO);
-    bool close = validDistance(lowerFeet) && lowerFeet < STOP_DISTANCE_FEET;
-    lowerCloseReads = close ? min(lowerCloseReads + 1, 100) : 0;
+    rightUltraFeet = readUltrasonicFeet(ULTRA_RIGHT_TRIG, ULTRA_RIGHT_ECHO);
+    bool close = validDistance(rightUltraFeet) && rightUltraFeet < STOP_DISTANCE_FEET;
+    rightUltraCloseReads = close ? min(rightUltraCloseReads + 1, 100) : 0;
   }
-  sampleUpperNext = !sampleUpperNext;
+  sampleLeftNext = !sampleLeftNext;
 }
 
 float readUltrasonicFeet(int trigPin, int echoPin) {
@@ -281,12 +281,12 @@ bool validDistance(float distanceFeet) {
 }
 
 bool obstacleAhead() {
-  return upperCloseReads >= OBSTACLE_CONFIRM_READS || lowerCloseReads >= OBSTACLE_CONFIRM_READS;
+  return leftUltraCloseReads >= OBSTACLE_CONFIRM_READS || rightUltraCloseReads >= OBSTACLE_CONFIRM_READS;
 }
 
 bool pathClear() {
-  return (!validDistance(upperFeet) || upperFeet > CLEAR_DISTANCE_FEET) &&
-         (!validDistance(lowerFeet) || lowerFeet > CLEAR_DISTANCE_FEET);
+  return (!validDistance(leftUltraFeet) || leftUltraFeet > CLEAR_DISTANCE_FEET) &&
+         (!validDistance(rightUltraFeet) || rightUltraFeet > CLEAR_DISTANCE_FEET);
 }
 
 // ==================== MOTION ====================
@@ -413,9 +413,9 @@ void sendTelemetry() {
   if (now - lastTelemetryMs >= TELEMETRY_MS) {
     lastTelemetryMs = now;
     Serial.print("U,");
-    Serial.print(validDistance(upperFeet) ? upperFeet : -1.0f, 2);
+    Serial.print(validDistance(leftUltraFeet) ? leftUltraFeet : -1.0f, 2);
     Serial.print(",");
-    Serial.println(validDistance(lowerFeet) ? lowerFeet : -1.0f, 2);
+    Serial.println(validDistance(rightUltraFeet) ? rightUltraFeet : -1.0f, 2);
   }
 
   if (now - lastStatusMs >= STATUS_MS) {

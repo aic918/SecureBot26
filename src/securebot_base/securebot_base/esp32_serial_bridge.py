@@ -37,8 +37,8 @@ class ESP32SerialBridge(Node):
             10
         )
 
-        self.upper_pub = self.create_publisher(Range, '/ultrasonic/upper', 10)
-        self.lower_pub = self.create_publisher(Range, '/ultrasonic/lower', 10)
+        self.left_pub = self.create_publisher(Range, '/ultrasonic/left', 10)
+        self.right_pub = self.create_publisher(Range, '/ultrasonic/right', 10)
 
         self.reader_thread = threading.Thread(target=self.read_serial_loop, daemon=True)
         self.reader_thread.start()
@@ -87,13 +87,13 @@ class ESP32SerialBridge(Node):
                 parts = line.split(',')
 
                 # Expected from ESP32:
-                # U,upper_distance_ft,lower_distance_ft
+                # U,left_distance_ft,right_distance_ft
                 if parts[0] == 'U' and len(parts) == 3:
-                    upper_ft = float(parts[1])
-                    lower_ft = float(parts[2])
+                    left_ft = float(parts[1])
+                    right_ft = float(parts[2])
 
-                    self.publish_range(self.upper_pub, upper_ft, 'upper_ultrasonic')
-                    self.publish_range(self.lower_pub, lower_ft, 'lower_ultrasonic')
+                    self.publish_range(self.left_pub, left_ft, 'left_ultrasonic')
+                    self.publish_range(self.right_pub, right_ft, 'right_ultrasonic')
 
             except Exception as e:
                 self.get_logger().warn(f'Serial read error: {e}')
