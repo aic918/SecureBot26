@@ -36,14 +36,16 @@ static int failures = 0;
 #define CHECK(cond) do { if (!(cond)) { printf("  FAIL line %d: %s\n", __LINE__, #cond); failures++; } } while (0)
 
 static int leftPWM() {
-  if (g_pin[LEFT_IN_A] == HIGH && g_pin[LEFT_IN_B] == LOW) return g_pwm[LEFT_EN];
-  if (g_pin[LEFT_IN_A] == LOW && g_pin[LEFT_IN_B] == HIGH) return -g_pwm[LEFT_EN];
-  return 0;
+  int v = 0;
+  if (g_pin[LEFT_IN_A] == HIGH && g_pin[LEFT_IN_B] == LOW) v = g_pwm[LEFT_EN];
+  if (g_pin[LEFT_IN_A] == LOW && g_pin[LEFT_IN_B] == HIGH) v = -g_pwm[LEFT_EN];
+  return LEFT_REVERSED ? -v : v;   // report the logical command
 }
 static int rightPWM() {
-  if (g_pin[RIGHT_IN_A] == HIGH && g_pin[RIGHT_IN_B] == LOW) return g_pwm[RIGHT_EN];
-  if (g_pin[RIGHT_IN_A] == LOW && g_pin[RIGHT_IN_B] == HIGH) return -g_pwm[RIGHT_EN];
-  return 0;
+  int v = 0;
+  if (g_pin[RIGHT_IN_A] == HIGH && g_pin[RIGHT_IN_B] == LOW) v = g_pwm[RIGHT_EN];
+  if (g_pin[RIGHT_IN_A] == LOW && g_pin[RIGHT_IN_B] == HIGH) v = -g_pwm[RIGHT_EN];
+  return RIGHT_REVERSED ? -v : v;   // report the logical command
 }
 static void send(const std::string &s) { g_in += s; }
 static void step(int ms) { for (int i = 0; i < ms; i++) { g_ms++; loop(); } }
@@ -198,14 +200,31 @@ static void t_pinout() {
   CHECK(UPPER_TRIG == 23 && UPPER_ECHO == 19 && LOWER_TRIG == 4 && LOWER_ECHO == 17);
   boot();
   send("M,120,-70\n"); step(5);                   // left forward 120, right reverse 70
-  CHECK(g_pwm[LEFT_EN] == 120 && g_pin[LEFT_IN_A] == HIGH && g_pin[LEFT_IN_B] == LOW);
-  CHECK(g_pwm[RIGHT_EN] == 70 && g_pin[RIGHT_IN_A] == LOW && g_pin[RIGHT_IN_B] == HIGH);
+  CHECK(g_pwm[LEFT_EN] == 120);     // direction pins depend on the polarity flags
+  CHECK(g_pin[LEFT_IN_A] == (LEFT_REVERSED ? LOW : HIGH) && g_pin[LEFT_IN_B] == (LEFT_REVERSED ? HIGH : LOW));
+  CHECK(g_pwm[RIGHT_EN] == 70);     // logical reverse
+  CHECK(g_pin[RIGHT_IN_A] == (RIGHT_REVERSED ? HIGH : LOW) && g_pin[RIGHT_IN_B] == (RIGHT_REVERSED ? LOW : HIGH));
+}
+
+static void t_polarity() {
+  // As wired, red (OUT2 right / OUT4 left, driven by IN_B) is the forward direction.
+  CHECK(LEFT_REVERSED && RIGHT_REVERSED);
+  boot();
+  send("M,100,100\n"); step(5);                  // both wheels forward
+  CHECK(g_pin[LEFT_IN_A] == LOW && g_pin[LEFT_IN_B] == HIGH && g_pwm[LEFT_EN] == 100);
+  CHECK(g_pin[RIGHT_IN_A] == LOW && g_pin[RIGHT_IN_B] == HIGH && g_pwm[RIGHT_EN] == 100);
+  send("M,-100,-100\n"); step(5);                // both wheels backward
+  CHECK(g_pin[LEFT_IN_A] == HIGH && g_pin[LEFT_IN_B] == LOW);
+  CHECK(g_pin[RIGHT_IN_A] == HIGH && g_pin[RIGHT_IN_B] == LOW);
+  send("stop\n"); step(5);                       // stopped: both inputs low
+  CHECK(g_pin[LEFT_IN_A] == LOW && g_pin[LEFT_IN_B] == LOW && g_pwm[LEFT_EN] == 0);
+  CHECK(g_pin[RIGHT_IN_A] == LOW && g_pin[RIGHT_IN_B] == LOW && g_pwm[RIGHT_EN] == 0);
 }
 
 struct T { const char *name; void (*fn)(); };
 int main(int argc, char **argv) {
   T tests[] = {
-    {"boot", t_boot}, {"pinout", t_pinout}, {"drive_and_clamp", t_drive_and_clamp}, {"speed_cap", t_speed_cap}, {"output_stage_cap", t_output_stage_cap},
+    {"boot", t_boot}, {"pinout", t_pinout}, {"polarity", t_polarity}, {"drive_and_clamp", t_drive_and_clamp}, {"speed_cap", t_speed_cap}, {"output_stage_cap", t_output_stage_cap},
     {"watchdog", t_watchdog}, {"heartbeat_keeps_running", t_heartbeat_keeps_running},
     {"partial_line", t_partial_line}, {"bad_input", t_bad_input},
     {"bad_command_not_heartbeat", t_bad_command_not_heartbeat},
