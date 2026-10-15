@@ -37,8 +37,10 @@ v1 firmware is preserved in git history (commit "S0-4").
 | Right encoder: blue / white (unused yet) | 13 / 12 |
 | Left encoder: blue / white (unused yet) | 34 / 35 |
 
-If a wheel turns the wrong way for a positive command, set `LEFT_REVERSED` / `RIGHT_REVERSED`
-at the top of the sketch instead of rewiring.
+Motor polarity: on both motors the black wire is on the driver's first output (OUT1 right,
+OUT3 left) and red on the second (OUT2 / OUT4), and red is the forward direction. So
+`LEFT_REVERSED` and `RIGHT_REVERSED` are both `true`. If a wheel turns the wrong way for a
+positive command, flip its flag at the top of the sketch instead of rewiring.
 
 ### Hardware cautions
 - **GPIO 12 (right encoder white) is a boot-strapping pin.** If the encoder output is HIGH while the
@@ -51,7 +53,7 @@ at the top of the sketch instead of rewiring.
   on both ECHO lines if you have not already.
 
 ## Tests (run on the Jetson/PC, no hardware)
-`./test/run_tests.sh` compiles the sketch against an Arduino stand-in (`test/shim`) and runs 15
+`./test/run_tests.sh` compiles the sketch against an Arduino stand-in (`test/shim`) and runs 16
 scenarios: pinout, PWM cap, watchdog, heartbeat, partial/oversized/garbage lines, obstacle gate,
 glitch rejection, full avoidance cycle, avoidance timeout, telemetry format.
 This checks the logic only; it does not replace testing on the robot.

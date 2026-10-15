@@ -33,9 +33,12 @@ const int LEFT_EN = 27;
 const int LEFT_IN_A = 32;     // IN3
 const int LEFT_IN_B = 14;     // IN4
 
-// Flip these if a wheel spins backwards for a positive command (wiring polarity).
-const bool LEFT_REVERSED = false;
-const bool RIGHT_REVERSED = false;
+// Wiring polarity. Each motor has its black wire on the driver's first output (OUT1 right,
+// OUT3 left, following IN_A) and its red wire on the second (OUT2 / OUT4). Red is the forward
+// direction, so driving IN_A high would spin the wheel backwards -> both are reversed.
+// If a wheel ever turns the wrong way for a positive command, flip its flag here.
+const bool LEFT_REVERSED = true;
+const bool RIGHT_REVERSED = true;
 
 // Encoder pins - not used yet. GPIO 34/35 are input-only with no internal pull-ups.
 const int RIGHT_ENCODER_BLUE = 13;
