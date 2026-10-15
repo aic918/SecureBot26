@@ -1,0 +1,40 @@
+# colcon build artifacts
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtual environments
+yolo-env/
+venv/
+.venv/
+
+# Model weights (download/copy separately; see README)
+*.pt
+*.onnx
+*.engine
+
+# Face data: biometric PII, never commit
+*.pkl
+authorized_faces/
+encodings/
+
+# Runtime logs / captures
+logs/
+*.log
+
+# Secrets
+.env
+*.key
+*.pem
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
