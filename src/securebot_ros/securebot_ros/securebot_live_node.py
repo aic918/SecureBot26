@@ -17,19 +17,20 @@ class SecureBotLiveNode(Node):
     def __init__(self):
         super().__init__("securebot_live_node")
 
-        # ROS publishers
         self.person_pub = self.create_publisher(Bool, "/person_detected", 10)
         self.face_status_pub = self.create_publisher(String, "/face_status", 10)
         self.recognized_name_pub = self.create_publisher(String, "/recognized_name", 10)
 
-        # Parameters
         self.declare_parameter(
             "encodings_file",
             "~/yolo/securebot_face_id/encodings/authorized_faces.pkl"
         )
         self.declare_parameter("model_path", "~/SecureBot/yolo11n.pt")
         self.declare_parameter("camera_index", 0)
-        self.declare_parameter("yolo_confidence", 0.40)
+
+        # Person detection must be 80% or higher
+        self.declare_parameter("yolo_confidence", 0.80)
+
         self.declare_parameter("face_tolerance", 0.45)
         self.declare_parameter("face_scale", 0.25)
         self.declare_parameter("face_interval", 5)
@@ -39,6 +40,7 @@ class SecureBotLiveNode(Node):
         self.declare_parameter("esp32_port", "/dev/ttyUSB0")
         self.declare_parameter("esp32_baud", 115200)
         self.declare_parameter("enable_motors", True)
+        self.declare_parameter("motor_speed", 88)
 
         self.encodings_file = Path(self.get_parameter("encodings_file").value).expanduser()
         self.model_path = str(Path(self.get_parameter("model_path").value).expanduser())
@@ -52,6 +54,7 @@ class SecureBotLiveNode(Node):
         self.esp32_port = self.get_parameter("esp32_port").value
         self.esp32_baud = self.get_parameter("esp32_baud").value
         self.enable_motors = self.get_parameter("enable_motors").value
+        self.motor_speed = int(self.get_parameter("motor_speed").value)
 
         self.esp = None
         self.last_motor_command = None
@@ -83,6 +86,8 @@ class SecureBotLiveNode(Node):
 
         self.get_logger().info("SecureBot live vision node started.")
         self.get_logger().info("Controls: S=start demo, X=stop robot, Q=quit")
+        self.get_logger().info(f"Person detection threshold: {self.yolo_confidence:.2f}")
+        self.get_logger().info(f"Motor speed: {self.motor_speed}")
 
         self.timer = self.create_timer(0.03, self.process_frame)
 
@@ -90,9 +95,12 @@ class SecureBotLiveNode(Node):
         try:
             self.esp = serial.Serial(self.esp32_port, self.esp32_baud, timeout=1)
             time.sleep(2)
-            self.esp.reset_input_buffer() 
+            self.esp.reset_input_buffer()
+
             self.send_motor_command("stop")
-            self.send_motor_command("speed 95")
+
+            self.send_motor_command(f"speed {self.motor_speed}")
+
             self.get_logger().info(
                 f"[INFO] Connected to ESP32 on {self.esp32_port} at {self.esp32_baud}"
             )
@@ -201,7 +209,7 @@ class SecureBotLiveNode(Node):
                     face_encoding
                 )
 
-                best_index = np.argmin(distances) 
+                best_index = np.argmin(distances)
 
                 if distances[best_index] < self.face_tolerance:
                     name = self.known_names[best_index]
@@ -233,6 +241,8 @@ class SecureBotLiveNode(Node):
                 cls_id = int(box.cls[0].item())
                 conf = float(box.conf[0].item())
 
+                # COCO class 0 = person
+                # Only detect person if confidence is 0.80 or higher
                 if cls_id == 0 and conf >= self.yolo_confidence:
                     person_found = True
                     x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
@@ -368,6 +378,22 @@ class SecureBotLiveNode(Node):
                 padding=5
             )
 
+            threshold_text = (
+                f"Person confidence required: {self.yolo_confidence:.2f}+ | "
+                f"Speed: {self.motor_speed}"
+            )
+
+            self.draw_text_with_bg(
+                frame,
+                threshold_text,
+                (20, 120),
+                text_color=(255, 255, 255),
+                bg_color=(0, 0, 0),
+                font_scale=0.6,
+                thickness=2,
+                padding=5
+            )
+
             cv2.imshow("SecureBot Live ROS", frame)
 
             key = cv2.waitKey(1) & 0xFF
@@ -380,8 +406,12 @@ class SecureBotLiveNode(Node):
                 self.send_motor_command("stop")
                 self.get_logger().info("Demo STOPPED")
             elif key == ord("q"):
+                self.get_logger().info("Quit command received")
+                self.demo_running = False
                 self.send_motor_command("stop")
-                rclpy.shutdown()
+                self.cap.release()
+                cv2.destroyAllWindows()
+                raise SystemExit
 
     def destroy_node(self):
         self.send_motor_command("stop")
@@ -389,7 +419,9 @@ class SecureBotLiveNode(Node):
         if self.esp is not None:
             self.esp.close()
 
-        self.cap.release()
+        if hasattr(self, "cap") and self.cap is not None:
+            self.cap.release()
+
         cv2.destroyAllWindows()
         super().destroy_node()
 
@@ -402,10 +434,14 @@ def main(args=None):
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
+    except SystemExit:
+        pass
 
     node.destroy_node()
-    rclpy.shutdown()
+
+    if rclpy.ok():
+        rclpy.shutdown()
 
 
 if __name__ == "__main__":
-    main()
+    main() 
