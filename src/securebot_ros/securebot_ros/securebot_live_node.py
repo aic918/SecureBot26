@@ -58,6 +58,10 @@ class SecureBotLiveNode(Node):
 
         self.esp = None
         self.last_motor_command = None
+        self.last_motor_send = 0.0
+        # ESP32 watchdog stops the robot if no command arrives for 500 ms,
+        # so the current command is resent at this period.
+        self.heartbeat_period = 0.2
         self.demo_running = False
 
         if self.enable_motors:
@@ -113,10 +117,16 @@ class SecureBotLiveNode(Node):
             return
 
         try:
-            if command != self.last_motor_command or command.startswith("speed"):
+            now = time.monotonic()
+            changed = command != self.last_motor_command
+            heartbeat_due = now - self.last_motor_send >= self.heartbeat_period
+
+            if changed or heartbeat_due or command.startswith("speed"):
                 self.esp.write((command + "\n").encode())
-                self.get_logger().info(f"Sent to ESP32: {command}")
+                if changed or command.startswith("speed"):
+                    self.get_logger().info(f"Sent to ESP32: {command}")
                 self.last_motor_command = command
+                self.last_motor_send = now
         except Exception as e:
             self.get_logger().error(f"[ERROR] Failed to send command to ESP32: {e}")
 

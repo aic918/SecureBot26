@@ -72,7 +72,8 @@ class ESP32SerialBridge(Node):
         msg.field_of_view = 0.26
         msg.min_range = 0.02
         msg.max_range = 4.0
-        msg.range = distance_ft * 0.3048
+        # Firmware reports -1 for "no reading"; REP-117 says out-of-range is +inf.
+        msg.range = distance_ft * 0.3048 if distance_ft > 0 else float('inf')
         publisher.publish(msg)
 
     def read_serial_loop(self):
