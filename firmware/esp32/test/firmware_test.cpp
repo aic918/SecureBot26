@@ -124,22 +124,22 @@ static void t_bad_command_not_heartbeat() {
 }
 static void t_drive_obstacle_gate() {
   boot();
-  g_echo_us[UPPER_ECHO] = ECHO_HALF_FT; g_echo_us[LOWER_ECHO] = ECHO_HALF_FT;
+  g_echo_us[ULTRA_LEFT_ECHO] = ECHO_HALF_FT; g_echo_us[ULTRA_RIGHT_ECHO] = ECHO_HALF_FT;
   stepHB(300, "M,100,100");
   CHECK(leftPWM() == 0 && rightPWM() == 0);     // net-forward blocked
   stepHB(300, "M,-100,100");
   CHECK(leftPWM() == -100 && rightPWM() == 100);// rotate in place allowed
   stepHB(300, "M,-100,-100");
   CHECK(leftPWM() == -100 && rightPWM() == -100);// reverse allowed
-  g_echo_us[UPPER_ECHO] = 0; g_echo_us[LOWER_ECHO] = 0;
+  g_echo_us[ULTRA_LEFT_ECHO] = 0; g_echo_us[ULTRA_RIGHT_ECHO] = 0;
   stepHB(300, "M,100,100");
   CHECK(leftPWM() == 100 && rightPWM() == 100); // clears when obstacle gone
 }
 static void t_single_glitch_ignored() {
   boot();
   stepHB(100, "M,100,100");
-  g_echo_us[UPPER_ECHO] = ECHO_HALF_FT; step(41);   // exactly one close upper reading
-  g_echo_us[UPPER_ECHO] = 0;
+  g_echo_us[ULTRA_LEFT_ECHO] = ECHO_HALF_FT; step(41);   // exactly one close left reading
+  g_echo_us[ULTRA_LEFT_ECHO] = 0;
   stepHB(400, "M,100,100");
   CHECK(leftPWM() == 100 && rightPWM() == 100);
 }
@@ -147,7 +147,7 @@ static void t_patrol_avoidance_cycle() {
   boot();
   stepHB(300, "patrol");
   CHECK(leftPWM() == 95 && rightPWM() == 95);
-  g_echo_us[UPPER_ECHO] = ECHO_HALF_FT; g_echo_us[LOWER_ECHO] = ECHO_HALF_FT;
+  g_echo_us[ULTRA_LEFT_ECHO] = ECHO_HALF_FT; g_echo_us[ULTRA_RIGHT_ECHO] = ECHO_HALF_FT;
   bool sawStop = false, sawReverse = false, sawRotate = false;
   for (int i = 0; i < 2000 && !sawRotate; i++) {
     stepHB(1, "patrol");
@@ -156,7 +156,7 @@ static void t_patrol_avoidance_cycle() {
     if (leftPWM() == 95 && rightPWM() == -95) sawRotate = true;
   }
   CHECK(sawStop && sawReverse && sawRotate);
-  g_echo_us[UPPER_ECHO] = ECHO_2FT; g_echo_us[LOWER_ECHO] = ECHO_2FT;
+  g_echo_us[ULTRA_LEFT_ECHO] = ECHO_2FT; g_echo_us[ULTRA_RIGHT_ECHO] = ECHO_2FT;
   bool sawSettle = false, resumed = false;
   for (int i = 0; i < 1500 && !resumed; i++) {
     stepHB(1, "patrol");
@@ -167,7 +167,7 @@ static void t_patrol_avoidance_cycle() {
 }
 static void t_avoid_timeout() {
   boot();
-  g_echo_us[UPPER_ECHO] = ECHO_HALF_FT; g_echo_us[LOWER_ECHO] = ECHO_HALF_FT;
+  g_echo_us[ULTRA_LEFT_ECHO] = ECHO_HALF_FT; g_echo_us[ULTRA_RIGHT_ECHO] = ECHO_HALF_FT;
   int i = 0;
   for (; i < 7000 && !outHas("E,avoid timeout"); i++) stepHB(1, "patrol");   // obstacle never clears
   CHECK(outHas("E,avoid timeout"));
@@ -181,7 +181,7 @@ static void t_telemetry() {
   boot(); g_out.clear();
   step(250);
   CHECK(outHas("U,-1.00,-1.00"));
-  g_echo_us[UPPER_ECHO] = ECHO_2FT; g_echo_us[LOWER_ECHO] = ECHO_2FT; g_out.clear();
+  g_echo_us[ULTRA_LEFT_ECHO] = ECHO_2FT; g_echo_us[ULTRA_RIGHT_ECHO] = ECHO_2FT; g_out.clear();
   step(300);
   CHECK(outHas("U,2.00,2.00"));
   CHECK(outHas("S,stop,0,0,0"));
@@ -189,13 +189,13 @@ static void t_telemetry() {
 
 static void t_pinout() {
   int pins[] = {LEFT_EN, LEFT_IN_A, LEFT_IN_B, RIGHT_EN, RIGHT_IN_A, RIGHT_IN_B,
-                UPPER_TRIG, UPPER_ECHO, LOWER_TRIG, LOWER_ECHO,
+                ULTRA_LEFT_TRIG, ULTRA_LEFT_ECHO, ULTRA_RIGHT_TRIG, ULTRA_RIGHT_ECHO,
                 LEFT_ENCODER_BLUE, LEFT_ENCODER_WHITE, RIGHT_ENCODER_BLUE, RIGHT_ENCODER_WHITE};
   int n = sizeof pins / sizeof pins[0];
   for (int i = 0; i < n; i++) for (int j = i + 1; j < n; j++) CHECK(pins[i] != pins[j]);
   CHECK(LEFT_EN == 27 && LEFT_IN_A == 32 && LEFT_IN_B == 14);
   CHECK(RIGHT_EN == 26 && RIGHT_IN_A == 25 && RIGHT_IN_B == 33);
-  CHECK(UPPER_TRIG == 23 && UPPER_ECHO == 19 && LOWER_TRIG == 4 && LOWER_ECHO == 17);
+  CHECK(ULTRA_LEFT_TRIG == 23 && ULTRA_LEFT_ECHO == 19 && ULTRA_RIGHT_TRIG == 4 && ULTRA_RIGHT_ECHO == 17);
   boot();
   send("M,120,-70\n"); step(5);                   // left forward 120, right reverse 70
   CHECK(g_pwm[LEFT_EN] == 120 && g_pin[LEFT_IN_A] == HIGH && g_pin[LEFT_IN_B] == LOW);

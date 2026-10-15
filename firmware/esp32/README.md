@@ -11,7 +11,7 @@ v1 firmware is preserved in git history (commit "S0-4").
   rejected with `E,...` and do not feed the watchdog.
 - **`M,<left>,<right>`** signed-PWM command, matching `esp32_serial_bridge.py` (`/cmd_vel`).
   Legacy text commands still work so `securebot_live_node.py` keeps running.
-- **Machine-readable telemetry:** `U,<upper_ft>,<lower_ft>` at 10 Hz (`-1` = no reading), `S,...` status.
+- **Machine-readable telemetry:** `U,<left_ft>,<right_ft>` at 10 Hz (`-1` = no reading), `S,...` status.
 - Ultrasonics sampled one at a time (no cross-talk, shorter blocking), a close reading must repeat
   twice before it counts, and `M` forward motion is blocked near an obstacle (rotate/reverse allowed).
 - Avoidance sequence unchanged, but the rotation now times out after 4 s instead of spinning forever.
@@ -23,7 +23,7 @@ v1 firmware is preserved in git history (commit "S0-4").
 | to ESP32 | `M,<l>,<r>` | wheel PWM, -150..150 |
 | to ESP32 | `stop` `forward` `patrol` `backward` `left` `right` | legacy modes |
 | to ESP32 | `speed <n>` | legacy-mode PWM, clamped 0..150 |
-| from ESP32 | `U,<upper_ft>,<lower_ft>` | distances in feet, `-1` = none |
+| from ESP32 | `U,<left_ft>,<right_ft>` | distances in feet, `-1` = none |
 | from ESP32 | `S,<mode>,<l>,<r>,<avoidState>` | status, 2 Hz |
 | from ESP32 | `I,<text>` / `E,<text>` | info / safety event |
 
@@ -32,8 +32,8 @@ v1 firmware is preserved in git history (commit "S0-4").
 |---|---|
 | Right motor: EN / IN1 / IN2 (driver channel A) | 26 / 25 / 33 |
 | Left motor: EN / IN3 / IN4 (driver channel B) | 27 / 32 / 14 |
-| Ultrasonic 1 ("upper"): TRIG / ECHO | 23 / 19 |
-| Ultrasonic 2 ("lower"): TRIG / ECHO | 4 / 17 |
+| Ultrasonic 1 (left): TRIG / ECHO | 23 / 19 |
+| Ultrasonic 2 (right): TRIG / ECHO | 4 / 17 |
 | Right encoder: blue / white (unused yet) | 13 / 12 |
 | Left encoder: blue / white (unused yet) | 34 / 35 |
 
