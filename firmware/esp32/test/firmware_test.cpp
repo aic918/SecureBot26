@@ -36,13 +36,13 @@ static int failures = 0;
 #define CHECK(cond) do { if (!(cond)) { printf("  FAIL line %d: %s\n", __LINE__, #cond); failures++; } } while (0)
 
 static int leftPWM() {
-  if (g_pin[IN1] == HIGH && g_pin[IN2] == LOW) return g_pwm[ENA];
-  if (g_pin[IN1] == LOW && g_pin[IN2] == HIGH) return -g_pwm[ENA];
+  if (g_pin[LEFT_IN_A] == HIGH && g_pin[LEFT_IN_B] == LOW) return g_pwm[LEFT_EN];
+  if (g_pin[LEFT_IN_A] == LOW && g_pin[LEFT_IN_B] == HIGH) return -g_pwm[LEFT_EN];
   return 0;
 }
 static int rightPWM() {
-  if (g_pin[IN3] == HIGH && g_pin[IN4] == LOW) return g_pwm[ENB];
-  if (g_pin[IN3] == LOW && g_pin[IN4] == HIGH) return -g_pwm[ENB];
+  if (g_pin[RIGHT_IN_A] == HIGH && g_pin[RIGHT_IN_B] == LOW) return g_pwm[RIGHT_EN];
+  if (g_pin[RIGHT_IN_A] == LOW && g_pin[RIGHT_IN_B] == HIGH) return -g_pwm[RIGHT_EN];
   return 0;
 }
 static void send(const std::string &s) { g_in += s; }
@@ -82,7 +82,7 @@ static void t_output_stage_cap() {
   boot();
   applyMotors(999, -999);                       // bypasses the command parser entirely
   CHECK(leftPWM() == MAX_PWM && rightPWM() == -MAX_PWM);
-  CHECK(g_pwm[ENA] <= MAX_PWM && g_pwm[ENB] <= MAX_PWM);
+  CHECK(g_pwm[LEFT_EN] <= MAX_PWM && g_pwm[RIGHT_EN] <= MAX_PWM);
 }
 static void t_watchdog() {
   boot();
@@ -187,10 +187,25 @@ static void t_telemetry() {
   CHECK(outHas("S,stop,0,0,0"));
 }
 
+static void t_pinout() {
+  int pins[] = {LEFT_EN, LEFT_IN_A, LEFT_IN_B, RIGHT_EN, RIGHT_IN_A, RIGHT_IN_B,
+                UPPER_TRIG, UPPER_ECHO, LOWER_TRIG, LOWER_ECHO,
+                LEFT_ENCODER_BLUE, LEFT_ENCODER_WHITE, RIGHT_ENCODER_BLUE, RIGHT_ENCODER_WHITE};
+  int n = sizeof pins / sizeof pins[0];
+  for (int i = 0; i < n; i++) for (int j = i + 1; j < n; j++) CHECK(pins[i] != pins[j]);
+  CHECK(LEFT_EN == 27 && LEFT_IN_A == 32 && LEFT_IN_B == 14);
+  CHECK(RIGHT_EN == 26 && RIGHT_IN_A == 25 && RIGHT_IN_B == 33);
+  CHECK(UPPER_TRIG == 23 && UPPER_ECHO == 19 && LOWER_TRIG == 4 && LOWER_ECHO == 17);
+  boot();
+  send("M,120,-70\n"); step(5);                   // left forward 120, right reverse 70
+  CHECK(g_pwm[LEFT_EN] == 120 && g_pin[LEFT_IN_A] == HIGH && g_pin[LEFT_IN_B] == LOW);
+  CHECK(g_pwm[RIGHT_EN] == 70 && g_pin[RIGHT_IN_A] == LOW && g_pin[RIGHT_IN_B] == HIGH);
+}
+
 struct T { const char *name; void (*fn)(); };
 int main(int argc, char **argv) {
   T tests[] = {
-    {"boot", t_boot}, {"drive_and_clamp", t_drive_and_clamp}, {"speed_cap", t_speed_cap}, {"output_stage_cap", t_output_stage_cap},
+    {"boot", t_boot}, {"pinout", t_pinout}, {"drive_and_clamp", t_drive_and_clamp}, {"speed_cap", t_speed_cap}, {"output_stage_cap", t_output_stage_cap},
     {"watchdog", t_watchdog}, {"heartbeat_keeps_running", t_heartbeat_keeps_running},
     {"partial_line", t_partial_line}, {"bad_input", t_bad_input},
     {"bad_command_not_heartbeat", t_bad_command_not_heartbeat},

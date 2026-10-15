@@ -27,15 +27,32 @@ v1 firmware is preserved in git history (commit "S0-4").
 | from ESP32 | `S,<mode>,<l>,<r>,<avoidState>` | status, 2 Hz |
 | from ESP32 | `I,<text>` / `E,<text>` | info / safety event |
 
-## Pins
-Left motor ENA 25, IN1 26, IN2 27 · Right motor ENB 14, IN3 12, IN4 13
-Upper ultrasonic TRIG 5 / ECHO 18 · Lower ultrasonic TRIG 17 / ECHO 16
-Encoders (defined, unused): R 33/32, L 35/34.
-Note: GPIO 12 (IN3) is a boot-strapping pin; if the board sometimes fails to boot, move it.
+## Pins (current wiring)
+| Function | GPIO |
+|---|---|
+| Right motor: EN / IN1 / IN2 (driver channel A) | 26 / 25 / 33 |
+| Left motor: EN / IN3 / IN4 (driver channel B) | 27 / 32 / 14 |
+| Ultrasonic 1 ("upper"): TRIG / ECHO | 23 / 19 |
+| Ultrasonic 2 ("lower"): TRIG / ECHO | 4 / 17 |
+| Right encoder: blue / white (unused yet) | 13 / 12 |
+| Left encoder: blue / white (unused yet) | 34 / 35 |
+
+If a wheel turns the wrong way for a positive command, set `LEFT_REVERSED` / `RIGHT_REVERSED`
+at the top of the sketch instead of rewiring.
+
+### Hardware cautions
+- **GPIO 12 (right encoder white) is a boot-strapping pin.** If the encoder output is HIGH while the
+  ESP32 resets, many modules fail to boot ("flash read err"). If you see random boot failures,
+  unplug that wire and retry, or move it to another pin (e.g. 36/39 are input-only and safe).
+- **GPIO 34 and 35 have no internal pull-up.** Open-collector encoder outputs need an external
+  pull-up (about 10 k to 3.3 V) on those two lines.
+- **GPIO 14 pulses at boot** on some boards, so the left motor may twitch once at power-up.
+- **HC-SR04 ECHO is a 5 V output.** ESP32 pins are 3.3 V only; use a voltage divider (e.g. 1 k / 2 k)
+  on both ECHO lines if you have not already.
 
 ## Tests (run on the Jetson/PC, no hardware)
-`./test/run_tests.sh` compiles the sketch against an Arduino stand-in (`test/shim`) and runs 14
-scenarios: PWM cap, watchdog, heartbeat, partial/oversized/garbage lines, obstacle gate,
+`./test/run_tests.sh` compiles the sketch against an Arduino stand-in (`test/shim`) and runs 15
+scenarios: pinout, PWM cap, watchdog, heartbeat, partial/oversized/garbage lines, obstacle gate,
 glitch rejection, full avoidance cycle, avoidance timeout, telemetry format.
 This checks the logic only; it does not replace testing on the robot.
 
