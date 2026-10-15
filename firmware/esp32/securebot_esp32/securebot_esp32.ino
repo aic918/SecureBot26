@@ -20,28 +20,34 @@
 //     obstacle inside STOP_DISTANCE_FEET (rotating in place and reversing still work).
 #include <Arduino.h>
 
-// ==================== MOTOR PINS ====================
-// Left motor
-const int ENA = 25;
-const int IN1 = 26;
-const int IN2 = 27;
+// ==================== PINOUT ====================
+// Motor driver (two channels). The RIGHT motor is on channel A and the LEFT motor
+// on channel B. "A"/"B" below is the driver's per-motor direction input pair.
+// Right motor (driver channel A)
+const int RIGHT_EN = 26;
+const int RIGHT_IN_A = 25;    // IN1
+const int RIGHT_IN_B = 33;    // IN2
 
-// Right motor
-const int ENB = 14;
-const int IN3 = 12;
-const int IN4 = 13;
+// Left motor (driver channel B)
+const int LEFT_EN = 27;
+const int LEFT_IN_A = 32;     // IN3
+const int LEFT_IN_B = 14;     // IN4
 
-// Encoder pins - not used yet
-const int RIGHT_ENCODER_BLUE = 33;
-const int RIGHT_ENCODER_WHITE = 32;
-const int LEFT_ENCODER_BLUE = 35;
-const int LEFT_ENCODER_WHITE = 34;
+// Flip these if a wheel spins backwards for a positive command (wiring polarity).
+const bool LEFT_REVERSED = false;
+const bool RIGHT_REVERSED = false;
 
-// ==================== ULTRASONIC SENSOR PINS ====================
-#define UPPER_TRIG 5
-#define UPPER_ECHO 18
-#define LOWER_TRIG 17
-#define LOWER_ECHO 16
+// Encoder pins - not used yet. GPIO 34/35 are input-only with no internal pull-ups.
+const int RIGHT_ENCODER_BLUE = 13;
+const int RIGHT_ENCODER_WHITE = 12;   // strapping pin, see firmware/esp32/README.md
+const int LEFT_ENCODER_BLUE = 34;
+const int LEFT_ENCODER_WHITE = 35;
+
+// Ultrasonic 1 = "upper", ultrasonic 2 = "lower" (these names appear in the telemetry order).
+#define UPPER_TRIG 23
+#define UPPER_ECHO 19
+#define LOWER_TRIG 4
+#define LOWER_ECHO 17
 
 // ==================== SETTINGS ====================
 const int MAX_PWM = 150;              // hard cap on any wheel PWM, every command path
@@ -108,12 +114,12 @@ bool pathClear();
 // ==================== SETUP ====================
 void setup() {
   // Motors first, so nothing can spin while the rest of setup runs.
-  pinMode(ENA, OUTPUT);
-  pinMode(IN1, OUTPUT);
-  pinMode(IN2, OUTPUT);
-  pinMode(ENB, OUTPUT);
-  pinMode(IN3, OUTPUT);
-  pinMode(IN4, OUTPUT);
+  pinMode(LEFT_EN, OUTPUT);
+  pinMode(LEFT_IN_A, OUTPUT);
+  pinMode(LEFT_IN_B, OUTPUT);
+  pinMode(RIGHT_EN, OUTPUT);
+  pinMode(RIGHT_IN_A, OUTPUT);
+  pinMode(RIGHT_IN_B, OUTPUT);
   applyMotors(0, 0);
 
   pinMode(UPPER_TRIG, OUTPUT);
@@ -377,8 +383,8 @@ void applyMotors(int left, int right) {
   left = constrain(left, -MAX_PWM, MAX_PWM);
   right = constrain(right, -MAX_PWM, MAX_PWM);
 
-  setMotor(ENA, IN1, IN2, left);
-  setMotor(ENB, IN3, IN4, right);
+  setMotor(LEFT_EN, LEFT_IN_A, LEFT_IN_B, LEFT_REVERSED ? -left : left);
+  setMotor(RIGHT_EN, RIGHT_IN_A, RIGHT_IN_B, RIGHT_REVERSED ? -right : right);
 
   appliedLeft = left;
   appliedRight = right;
