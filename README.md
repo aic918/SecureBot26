@@ -42,15 +42,28 @@ pip install -r requirements.txt   # install Jetson torch/torchvision wheels sepa
 ```
 
 ## Run
-Enroll authorized faces (one folder of photos per person), then start the node:
+Build first (see above), then:
 ```bash
-source ~/yolo-env/bin/activate
-python3 src/securebot_ros/securebot_ros/enroll_faces.py   # see --help for paths
-python3 src/securebot_ros/securebot_ros/securebot_live_node.py
+source /opt/ros/humble/setup.bash && source ~/securebot_ws/install/setup.bash
+ros2 launch securebot_ros securebot_live.launch.py
 ```
-(`ros2 run` does not yet see the venv's `face_recognition`; tracked in Sprint 1.)
+The launch file runs the node with the `~/yolo-env` venv's Python and adds the venv's NVIDIA
+libraries to `LD_LIBRARY_PATH` (torch fails with `libcudss.so.0` otherwise). Plain
+`ros2 run securebot_ros securebot_live_node` uses the system Python and will fail on
+`import face_recognition`; use the launch file.
 
-Override paths with ROS params, e.g. `--ros-args -p model_path:=/path/yolo11n.pt`.
+Options (anything left out keeps the node's default):
+```bash
+ros2 launch securebot_ros securebot_live.launch.py \
+    venv:=~/yolo-env model_path:=~/SecureBot/yolo11n.pt motor_speed:=88 \
+    enable_motors:=false show_camera:=false
+```
+`enable_motors:=false` skips the ESP32 serial port, which is handy for testing vision alone.
+
+Enroll authorized faces (one folder of photos per person) before the first run:
+```bash
+~/yolo-env/bin/python src/securebot_ros/securebot_ros/enroll_faces.py   # see --help for paths
+```
 In the camera window: **S** start, **X** stop, **Q** quit.
 
 ## Contributing
