@@ -25,9 +25,9 @@ class SecureBotLiveNode(Node):
         # Parameters
         self.declare_parameter(
             "encodings_file",
-            "/home/securebot/yolo/securebot_face_id/encodings/authorized_faces.pkl"
+            "~/yolo/securebot_face_id/encodings/authorized_faces.pkl"
         )
-        self.declare_parameter("model_path", "/home/securebot/SecureBot/yolo11n.pt")
+        self.declare_parameter("model_path", "~/SecureBot/yolo11n.pt")
         self.declare_parameter("camera_index", 0)
         self.declare_parameter("yolo_confidence", 0.40)
         self.declare_parameter("face_tolerance", 0.45)
@@ -40,8 +40,8 @@ class SecureBotLiveNode(Node):
         self.declare_parameter("esp32_baud", 115200)
         self.declare_parameter("enable_motors", True)
 
-        self.encodings_file = Path(self.get_parameter("encodings_file").value)
-        self.model_path = self.get_parameter("model_path").value
+        self.encodings_file = Path(self.get_parameter("encodings_file").value).expanduser()
+        self.model_path = str(Path(self.get_parameter("model_path").value).expanduser())
         self.camera_index = self.get_parameter("camera_index").value
         self.yolo_confidence = self.get_parameter("yolo_confidence").value
         self.face_tolerance = self.get_parameter("face_tolerance").value

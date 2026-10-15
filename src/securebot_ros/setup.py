@@ -26,6 +26,7 @@ setup(
 entry_points={
     'console_scripts': [
          'securebot_live_node = securebot_ros.securebot_live_node:main',
+        'enroll_faces = securebot_ros.enroll_faces:main',
         'yolo_person_node = securebot_ros.yolo_person_node:main',
         'motion_manager_node = securebot_ros.motion_manager_node:main',
         'simple_patrol_node = securebot_ros.simple_patrol_node:main',
