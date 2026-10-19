@@ -53,8 +53,7 @@ positive command, flip its flag at the top of the sketch instead of rewiring.
   on both ECHO lines if you have not already.
 
 ## Tests (run on the Jetson/PC, no hardware)
-`./test/run_tests.sh` compiles the sketch against an Arduino stand-in (`test/shim`) and runs 16
-scenarios: pinout, PWM cap, watchdog, heartbeat, partial/oversized/garbage lines, obstacle gate,
+`./test/run_tests.sh` compiles the sketch against an Arduino stand-in (`test/shim`) and runs the firmware scenarios plus the ultrasonic diagnostic's: pinout, PWM cap, watchdog, heartbeat, partial/oversized/garbage lines, obstacle gate,
 glitch rejection, full avoidance cycle, avoidance timeout, telemetry format.
 This checks the logic only; it does not replace testing on the robot.
 

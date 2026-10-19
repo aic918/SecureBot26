@@ -11,6 +11,9 @@
 #define LOW 0
 #define INPUT 0
 #define OUTPUT 1
+#define INPUT_PULLDOWN 3
+#define CHANGE 2
+#define IRAM_ATTR
 #define constrain(x, a, b) ((x) < (a) ? (a) : ((x) > (b) ? (b) : (x)))
 #define min(a, b) ((a) < (b) ? (a) : (b))
 
@@ -21,6 +24,7 @@ long pulseIn(int pin, int state, unsigned long timeout);
 void pinMode(int pin, int mode);
 void digitalWrite(int pin, int value);
 void analogWrite(int pin, int value);
+void attachInterruptArg(uint8_t pin, void (*fn)(void *), void *arg, int mode);
 
 struct SerialClass {
   void begin(long) {}
