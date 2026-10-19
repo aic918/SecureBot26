@@ -34,7 +34,7 @@ v1 firmware is preserved in git history (commit "S0-4").
 | Left motor: EN / IN3 / IN4 (driver channel B) | 27 / 32 / 14 |
 | Ultrasonic 1 (left): TRIG / ECHO | 23 / 19 |
 | Ultrasonic 2 (right): TRIG / ECHO | 4 / 17 |
-| Right encoder: blue / white (unused yet) | 13 / 12 |
+| Right encoder: blue / white (unused yet) | 13 / 18 |
 | Left encoder: blue / white (unused yet) | 34 / 35 |
 
 Motor polarity: on both motors the black wire is on the driver's first output (OUT1 right,
@@ -43,9 +43,10 @@ OUT3 left) and red on the second (OUT2 / OUT4), and red is the forward direction
 positive command, flip its flag at the top of the sketch instead of rewiring.
 
 ### Hardware cautions
-- **GPIO 12 (right encoder white) is a boot-strapping pin.** If the encoder output is HIGH while the
-  ESP32 resets, many modules fail to boot ("flash read err"). If you see random boot failures,
-  unplug that wire and retry, or move it to another pin (e.g. 36/39 are input-only and safe).
+- **Never put a wire on a boot-strapping pin (GPIO 0, 2, 5, 12, 15).** The right encoder's white wire
+  used to be on GPIO 12; with it connected the ESP32 could not read its flash, uploads failed
+  ("Failed to communicate with the flash chip") and the serial port streamed garbage. It is now on
+  GPIO 18. A test fails if any pin in this sketch lands on a strapping, flash (6-11) or USB-serial (1, 3) pin.
 - **GPIO 34 and 35 have no internal pull-up.** Open-collector encoder outputs need an external
   pull-up (about 10 k to 3.3 V) on those two lines.
 - **GPIO 14 pulses at boot** on some boards, so the left motor may twitch once at power-up.
