@@ -66,6 +66,13 @@ Enroll authorized faces (one folder of photos per person) before the first run:
 ```
 In the camera window: **S** start, **X** stop, **Q** quit.
 
+## Checking the ultrasonics (read-only)
+```bash
+python3 tools/ultrasonic_monitor.py          # live bars for LEFT and RIGHT, auto-finds the ESP32
+python3 tools/ultrasonic_monitor.py --seconds 20 --plain   # 20 s, plain text, then a summary
+```
+Close any other serial monitor first. It never sends anything, so the motors cannot move.
+
 ## Contributing
 - Branch from `main` (`feat/<sprint>-<name>`) and open a PR; `main` needs owner review.
 - Test motor changes with the wheels off the ground first.
