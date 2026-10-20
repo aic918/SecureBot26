@@ -197,6 +197,10 @@ static void t_pinout() {
   for (int i = 0; i < n; i++) for (int j = i + 1; j < n; j++) CHECK(pins[i] != pins[j]);
   CHECK(LEFT_EN == 27 && LEFT_IN_A == 32 && LEFT_IN_B == 14);
   CHECK(RIGHT_EN == 26 && RIGHT_IN_A == 25 && RIGHT_IN_B == 33);
+  // No input/output may sit on a boot-strapping, flash or USB-serial pin.
+  const int forbidden[] = {0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 15};
+  for (int i = 0; i < n; i++) for (int f : forbidden) CHECK(pins[i] != f);
+  CHECK(RIGHT_ENCODER_WHITE == 18);
   CHECK(ULTRA_LEFT_TRIG == 23 && ULTRA_LEFT_ECHO == 19 && ULTRA_RIGHT_TRIG == 4 && ULTRA_RIGHT_ECHO == 17);
   boot();
   send("M,120,-70\n"); step(5);                   // left forward 120, right reverse 70

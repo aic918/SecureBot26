@@ -41,8 +41,10 @@ const bool LEFT_REVERSED = true;
 const bool RIGHT_REVERSED = true;
 
 // Encoder pins - not used yet. GPIO 34/35 are input-only with no internal pull-ups.
+// Never use a boot-strapping pin here (0, 2, 5, 12, 15): an encoder holding GPIO 12 high at
+// reset made the flash unreadable and the board would not boot or accept uploads.
 const int RIGHT_ENCODER_BLUE = 13;
-const int RIGHT_ENCODER_WHITE = 12;   // strapping pin, see firmware/esp32/README.md
+const int RIGHT_ENCODER_WHITE = 18;
 const int LEFT_ENCODER_BLUE = 34;
 const int LEFT_ENCODER_WHITE = 35;
 
