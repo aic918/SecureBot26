@@ -1,0 +1,31 @@
+# Filter chain for the RPLidar A1M8: /scan_raw (driver) -> /scan (everything else uses this).
+#
+# Angles are in the laser frame, ROS convention: radians, counter-clockwise, 0 = laser +x,
+# range -pi..pi. The camera tower shadows 143-225 deg (re-measured 2026-10-22 after moving
+# the tower: 150 scans, one blind sector, no returns closer than 35 cm; centered on
+# 180 deg), masked here with 3 deg of margin on each side: 140-229 deg. That sector
+# crosses +/-pi, so it takes two filters. Re-measure with tools/lidar_viewer.py if the
+# LiDAR or the tower moves.
+lidar_filters:
+  ros__parameters:
+    filter1:
+      name: tower_shadow_upper            # 140 deg .. 180 deg
+      type: laser_filters/LaserScanAngularBoundsFilterInPlace
+      params:
+        lower_angle: 2.443
+        upper_angle: 3.1416
+    filter2:
+      name: tower_shadow_lower            # -180 deg .. -131 deg (= 229 deg)
+      type: laser_filters/LaserScanAngularBoundsFilterInPlace
+      params:
+        lower_angle: -3.1416
+        upper_angle: -2.286
+    filter3:
+      name: self_hits                     # anything this close is the robot itself
+      type: laser_filters/LaserScanRangeFilter
+      params:
+        use_message_range_limits: false
+        lower_threshold: 0.20
+        upper_threshold: 12.0
+        lower_replacement_value: .inf     # "nothing seen", not an obstacle at 0 m
+        upper_replacement_value: .inf
