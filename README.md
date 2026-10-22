@@ -66,6 +66,21 @@ Enroll authorized faces (one folder of photos per person) before the first run:
 ```
 In the camera window: **S** start, **X** stop, **Q** quit.
 
+## LiDAR viewer (temporary, before ROS)
+Live top-down view of the RPLidar A1M8 with the camera tower's blind spot measured and shaded.
+Needs only pyserial and matplotlib (system Python); it never talks to the ESP32.
+```bash
+python3 tools/lidar_viewer.py               # finds the LiDAR (it answers a device-info request)
+python3 tools/lidar_viewer.py /dev/ttyUSB0  # or name the port
+python3 tools/lidar_viewer.py --demo        # simulated room + tower, no hardware
+```
+Robot front is at the top (`--front-offset` rotates the view if the LiDAR's 0° is not the front).
+Orange points closer than `--tower-cm` (20) are the robot itself; gray wedges are angles with no
+usable return in ~15 s. To measure the blind spot, press **c**, then walk once around the robot
+holding a board ~50 cm away: what stays gray is blocked by the tower. The sectors are printed on
+exit for the ROS laser filter. Keys: **space** pause, **s** save PNG + CSV, **+/-** zoom, **q** quit.
+Tests: `python3 -m unittest tools.test_lidar_viewer`.
+
 ## Contributing
 - Branch from `main` (`feat/<sprint>-<name>`) and open a PR; `main` needs owner review.
 - Test motor changes with the wheels off the ground first.
