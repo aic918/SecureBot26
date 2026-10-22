@@ -15,7 +15,7 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
@@ -33,10 +33,11 @@ def generate_launch_description():
                                                          'slam_toolbox_mapping.yaml')),
     ]
 
-    lidar = IncludeLaunchDescription(
+    # Scoped, so the included launch's rviz:=false does not switch off this file's RViz too.
+    lidar = GroupAction(scoped=True, actions=[IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(share, 'launch', 'securebot_lidar.launch.py')),
         launch_arguments={'rviz': 'false'}.items(),
-    )
+    )])
 
     odometry = Node(
         package='rf2o_laser_odometry', executable='rf2o_laser_odometry_node',
