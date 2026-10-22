@@ -147,14 +147,19 @@ class RPLidar:
     def start(self):
         self.ser.dtr = False           # motor on
         time.sleep(1.0)                # let it reach speed
-        for _ in range(3):
+        for attempt in range(6):
+            if attempt == 3:           # still refusing: soft-reset (reboots in ~2 s) and retry
+                self._cmd(CMD_RESET)
+                time.sleep(2.0)
             self._cmd(CMD_STOP)
             time.sleep(0.05)
             self.ser.reset_input_buffer()
             self._cmd(CMD_SCAN)
             if self.ser.read(7) == SCAN_DESCRIPTOR:
                 return
-        raise RuntimeError("LiDAR did not start scanning (bad response to SCAN)")
+        raise RuntimeError("the LiDAR answers but will not start scanning. Is the head spinning? "
+                           "If not, check nothing touches it and that it gets enough USB power "
+                           "(unplug and replug it, or use a powered hub).")
 
     def revolutions(self, stop_event):
         while not stop_event.is_set():
@@ -515,7 +520,9 @@ def main(argv=None):
     print(f"LiDAR on {lidar.port}: model {info['model']}, firmware {info['firmware']}, "
           f"hardware {info['hardware']}, serial {info['serial']}")
     health = lidar.health()
-    if health:
+    if not health:
+        print("health: no answer")
+    else:
         print(f"health: {HEALTH_NAMES.get(health[0], health[0])} (code {health[1]})")
         if health[0] == 2:
             lidar.close()
@@ -524,7 +531,10 @@ def main(argv=None):
     tracker = BlindSpotTracker(args.tower_cm * 10)
     reader = Reader(lidar, tracker)
     try:
-        lidar.start()
+        try:
+            lidar.start()
+        except RuntimeError as e:
+            sys.exit(f"Cannot scan: {e}")
         reader.start()
         import matplotlib
         if args.snapshot:
@@ -549,8 +559,11 @@ def main(argv=None):
         pass
     finally:
         reader.stop_event.set()
-        reader.join(timeout=2)
+        if reader.is_alive():
+            reader.join(timeout=2)
         lidar.close()
+        if not tracker.history:
+            return
         sectors = tracker.sectors()
         print(f"\nMeasured blind sectors over the last {len(tracker.history)} revolutions "
               f"(LiDAR degrees, clockwise from the LiDAR's 0°): {describe_sectors(sectors)}")
