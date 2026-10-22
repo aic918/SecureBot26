@@ -42,6 +42,9 @@ def generate_launch_description():
 
     lidar = Node(
         package='rplidar_ros', executable='rplidar_node', name='rplidar_node', output='screen',
+        # The A1 sometimes misses the first request or refuses to scan right after the motor
+        # starts; rplidar_node then exits, so start it again instead of giving up.
+        respawn=True, respawn_delay=3.0,
         parameters=[{
             'channel_type': 'serial',
             'serial_port': arg('serial_port'),
