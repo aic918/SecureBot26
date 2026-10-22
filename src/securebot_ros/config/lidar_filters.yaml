@@ -1,7 +1,8 @@
 # Filter chain for the RPLidar A1M8: /scan_raw (driver) -> /scan (everything else uses this).
 #
 # Angles are in the laser frame, ROS convention: radians, counter-clockwise, 0 = laser +x,
-# range -pi..pi. The camera tower shadows 143-226 deg (measured 2026-10-22, centered on
+# range -pi..pi. The camera tower shadows 143-225 deg (re-measured 2026-10-22 after moving
+# the tower: 150 scans, one blind sector, no returns closer than 35 cm; centered on
 # 180 deg), masked here with 3 deg of margin on each side: 140-229 deg. That sector
 # crosses +/-pi, so it takes two filters. Re-measure with tools/lidar_viewer.py if the
 # LiDAR or the tower moves.
