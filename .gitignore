@@ -38,3 +38,6 @@ logs/
 .idea/
 *.swp
 .DS_Store
+
+# Third-party ROS packages cloned into src/ (see deps.repos)
+src/rf2o_laser_odometry/

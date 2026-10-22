@@ -1,0 +1,7 @@
+# Third-party source packages, cloned into src/ and built with colcon (not committed here).
+#   vcs import src < deps.repos      (or: git -C src clone -b ros2 <url>)
+repositories:
+  rf2o_laser_odometry:
+    type: git
+    url: https://github.com/MAPIRlab/rf2o_laser_odometry.git
+    version: ros2
