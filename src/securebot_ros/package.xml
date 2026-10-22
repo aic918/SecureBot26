@@ -12,6 +12,7 @@
   <depend>geometry_msgs</depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
+  <exec_depend>securebot_base</exec_depend>
   <exec_depend>rplidar_ros</exec_depend>
   <exec_depend>laser_filters</exec_depend>
   <exec_depend>tf2_ros</exec_depend>

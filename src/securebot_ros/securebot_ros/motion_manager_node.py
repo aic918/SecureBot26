@@ -1,73 +1,75 @@
+"""Final gate between the security decision and the wheels.
+
+Inputs
+  /security/motion  std_msgs/String  stop | patrol    (securebot_live_node, every camera frame)
+  /nav_cmd_vel      geometry_msgs/Twist                (Nav2 / teleop later; optional)
+Outputs (to esp32_serial_bridge)
+  /esp32/mode  std_msgs/String  stop | patrol | drive
+  /cmd_vel     geometry_msgs/Twist   (only meaningful in drive mode)
+
+Rules, in order:
+  1. security says stop, or has said nothing for `security_timeout` -> stop
+  2. a /nav_cmd_vel newer than `nav_timeout`                        -> drive with it
+  3. otherwise                                                      -> patrol (the firmware's
+     own drive-forward + ultrasonic avoidance, unchanged from before)
+"""
+import time
+
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Bool
+from std_msgs.msg import String
 from geometry_msgs.msg import Twist
+
+
+def decide(security, security_age, nav_age, security_timeout, nav_timeout):
+    """-> 'stop' | 'drive' | 'patrol'. Ages are seconds since the last message (inf if never)."""
+    if security != 'patrol' or security_age > security_timeout:
+        return 'stop'
+    if nav_age <= nav_timeout:
+        return 'drive'
+    return 'patrol'
 
 
 class MotionManagerNode(Node):
     def __init__(self):
         super().__init__('motion_manager_node')
 
-        self.nav_cmd_sub = self.create_subscription(
-            Twist,
-            '/nav_cmd_vel',
-            self.nav_cmd_callback,
-            10
-        )
+        self.declare_parameter('security_timeout', 1.0)
+        self.declare_parameter('nav_timeout', 0.5)
+        self.security_timeout = float(self.get_parameter('security_timeout').value)
+        self.nav_timeout = float(self.get_parameter('nav_timeout').value)
 
-        self.person_sub = self.create_subscription(
-            Bool,
-            '/person_detected',
-            self.person_callback,
-            10
-        )
+        self.security, self.security_time = 'stop', None
+        self.nav_cmd, self.nav_time = Twist(), None
+        self.last_mode = None
 
+        self.create_subscription(String, '/security/motion', self.security_callback, 10)
+        self.create_subscription(Twist, '/nav_cmd_vel', self.nav_cmd_callback, 10)
+        self.mode_pub = self.create_publisher(String, '/esp32/mode', 10)
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
-
-        self.latest_nav_cmd = Twist()
-        self.person_detected = False
-
-        self.declare_parameter('stop_hold_time', 2.0)
-        self.stop_hold_time = self.get_parameter('stop_hold_time').value
-
-        self.last_person_time = None
 
         self.timer = self.create_timer(0.05, self.publish_final_cmd)
 
-        self.get_logger().info('Motion manager started.')
-        self.get_logger().info('Subscribing to /nav_cmd_vel and /person_detected')
-        self.get_logger().info('Publishing final motor command to /cmd_vel')
+        self.get_logger().info('Motion manager: /security/motion + /nav_cmd_vel -> /esp32/mode + /cmd_vel')
+
+    def security_callback(self, msg):
+        self.security, self.security_time = msg.data.strip().lower(), time.monotonic()
 
     def nav_cmd_callback(self, msg):
-        self.latest_nav_cmd = msg
-
-    def person_callback(self, msg):
-        self.person_detected = msg.data
-
-        if self.person_detected:
-            self.last_person_time = self.get_clock().now()
-            self.get_logger().info('Person detected. Stopping robot.')
+        self.nav_cmd, self.nav_time = msg, time.monotonic()
 
     def publish_final_cmd(self):
-        final_cmd = Twist()
+        now = time.monotonic()
+        age = lambda t: float('inf') if t is None else now - t  # noqa: E731
+        mode = decide(self.security, age(self.security_time), age(self.nav_time),
+                      self.security_timeout, self.nav_timeout)
 
-        should_stop = False
+        self.mode_pub.publish(String(data=mode))
+        self.cmd_pub.publish(self.nav_cmd if mode == 'drive' else Twist())
 
-        if self.person_detected:
-            should_stop = True
-
-        if self.last_person_time is not None:
-            elapsed = (self.get_clock().now() - self.last_person_time).nanoseconds / 1e9
-            if elapsed < self.stop_hold_time:
-                should_stop = True
-
-        if should_stop:
-            final_cmd.linear.x = 0.0
-            final_cmd.angular.z = 0.0
-        else:
-            final_cmd = self.latest_nav_cmd
-
-        self.cmd_pub.publish(final_cmd)
+        if mode != self.last_mode:
+            self.get_logger().info(f'Motion: {mode}')
+            self.last_mode = mode
 
 
 def main(args=None):
@@ -80,7 +82,8 @@ def main(args=None):
         pass
 
     node.destroy_node()
-    rclpy.shutdown()
+    if rclpy.ok():
+        rclpy.shutdown()
 
 
 if __name__ == '__main__':
