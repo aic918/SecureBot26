@@ -66,16 +66,6 @@ Enroll authorized faces (one folder of photos per person) before the first run:
 ```
 In the camera window: **S** start, **X** stop, **Q** quit.
 
-## LiDAR in ROS (RPLidar A1M8)
-One-time install: `sudo apt install ros-humble-rplidar-ros ros-humble-laser-filters`.
-```bash
-ros2 launch securebot_ros securebot_lidar.launch.py             # /scan_raw -> filter -> /scan
-ros2 launch securebot_ros securebot_lidar.launch.py rviz:=true  # plus a top-down RViz view
-```
-`/scan` has the camera tower's shadow (laser frame 140-229 deg) and self-hits closer than
-20 cm masked as "nothing seen" (`config/lidar_filters.yaml`). The port defaults to the LiDAR's
-USB socket path, so plug it into the same socket. The `base_link -> laser` TF is a placeholder
-(`laser_x/y/z/yaw` args) until the URDF exists.
 
 ## Contributing
 - Branch from `main` (`feat/<sprint>-<name>`) and open a PR; `main` needs owner review.
