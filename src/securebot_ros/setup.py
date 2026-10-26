@@ -36,6 +36,7 @@ entry_points={
         'yolo_person_node = securebot_ros.yolo_person_node:main',
         'motion_manager_node = securebot_ros.motion_manager_node:main',
         'simple_patrol_node = securebot_ros.simple_patrol_node:main',
+        'teleop_keyboard = securebot_ros.teleop_keyboard:main',
     ],
 },
 

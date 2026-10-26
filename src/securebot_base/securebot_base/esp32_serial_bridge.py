@@ -29,13 +29,21 @@ def clamp(value, low, high):
     return max(low, min(high, value))
 
 
-def twist_to_pwm(linear, angular, max_linear_mps, max_angular_rps, wheel_base_m, max_pwm):
-    """Differential-drive Twist -> (left_pwm, right_pwm), each clamped to +/-max_pwm."""
+def twist_to_pwm(linear, angular, max_linear_mps, max_angular_rps, wheel_base_m, max_pwm,
+                 min_pwm=0):
+    """Differential-drive Twist -> (left_pwm, right_pwm), each clamped to +/-max_pwm.
+    Below min_pwm the motors only hum, so a command whose faster wheel is under it is scaled
+    up (both wheels together, keeping their ratio and so the direction of a curve)."""
     linear = clamp(linear, -max_linear_mps, max_linear_mps)
     angular = clamp(angular, -max_angular_rps, max_angular_rps)
-    left = linear - angular * wheel_base_m / 2.0
-    right = linear + angular * wheel_base_m / 2.0
-    to_pwm = lambda v: int(clamp(round(v / max_linear_mps * max_pwm), -max_pwm, max_pwm))  # noqa: E731
+    left = (linear - angular * wheel_base_m / 2.0) / max_linear_mps * max_pwm
+    right = (linear + angular * wheel_base_m / 2.0) / max_linear_mps * max_pwm
+
+    fastest = max(abs(left), abs(right))
+    if 0 < fastest < min_pwm:
+        left, right = left * min_pwm / fastest, right * min_pwm / fastest
+
+    to_pwm = lambda v: int(clamp(round(v), -max_pwm, max_pwm))  # noqa: E731
     return to_pwm(left), to_pwm(right)
 
 
@@ -73,6 +81,7 @@ class ESP32SerialBridge(Node):
         self.declare_parameter('port', '/dev/serial/by-path/platform-3610000.usb-usb-0:2.3:1.0-port0')
         self.declare_parameter('baudrate', 115200)
         self.declare_parameter('max_pwm', 150)
+        self.declare_parameter('min_pwm', 0)            # deadband floor for M,l,r (0 = off)
         self.declare_parameter('max_linear_mps', 0.35)
         self.declare_parameter('max_angular_rps', 1.5)
         self.declare_parameter('wheel_base_m', 0.22)
@@ -83,7 +92,7 @@ class ESP32SerialBridge(Node):
         p = lambda name: self.get_parameter(name).value  # noqa: E731
         self.port = p('port')
         self.pwm_args = (float(p('max_linear_mps')), float(p('max_angular_rps')),
-                         float(p('wheel_base_m')), int(p('max_pwm')))
+                         float(p('wheel_base_m')), int(p('max_pwm')), int(p('min_pwm')))
         self.patrol_speed = int(p('patrol_speed'))
         self.timeout = float(p('command_timeout'))
 
