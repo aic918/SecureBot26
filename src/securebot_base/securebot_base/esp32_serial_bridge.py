@@ -9,7 +9,7 @@ Outputs
   /esp32/status  std_msgs/String  the firmware's `S,<mode>,<l>,<r>,<avoid>` line, without "S,"
 
 Safety: the current command is resent every `heartbeat_period` (the firmware stops on its own
-after 500 ms without one). A mode or /cmd_vel older than `command_timeout` counts as "stop",
+after 250 ms without one). A mode or /cmd_vel older than `command_timeout` counts as "stop",
 so if the motion manager or the planner dies, the robot stops.
 """
 import threading
@@ -80,15 +80,17 @@ class ESP32SerialBridge(Node):
         # LiDAR, which uses the same CP2102 adapter with the same serial number.
         self.declare_parameter('port', '/dev/serial/by-path/platform-3610000.usb-usb-0:2.3:1.0-port0')
         self.declare_parameter('baudrate', 115200)
-        self.declare_parameter('max_pwm', 150)
+        # PWM is 10-bit duty (0-1023) since the firmware moved to 10 kHz LEDC PWM; 655 (~64 %)
+        # is the drive level verified with the senior1typetest sketch and the firmware's cap.
+        self.declare_parameter('max_pwm', 655)
         self.declare_parameter('min_pwm', 0)            # deadband floor for M,l,r (0 = off)
         self.declare_parameter('max_linear_mps', 0.35)
         self.declare_parameter('max_angular_rps', 1.5)
         # Drive wheels 72 mm wide, 368 mm apart inside edge to inside edge -> 440 mm centre to
         # centre (measured 2026-10-26). Wheel diameter 192 mm (used once encoders give odometry).
         self.declare_parameter('wheel_base_m', 0.44)
-        self.declare_parameter('patrol_speed', 88)      # PWM the firmware's own patrol uses
-        self.declare_parameter('heartbeat_period', 0.2)
+        self.declare_parameter('patrol_speed', 655)     # PWM the firmware's own patrol uses
+        self.declare_parameter('heartbeat_period', 0.1)     # firmware watchdog is 250 ms
         self.declare_parameter('command_timeout', 0.5)
 
         p = lambda name: self.get_parameter(name).value  # noqa: E731

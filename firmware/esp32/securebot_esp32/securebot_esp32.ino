@@ -3,7 +3,7 @@
 // Serial protocol, 115200 baud, newline-terminated.
 //
 // Jetson -> ESP32
-//   M,<left>,<right>   signed wheel PWM, clamped to +/-MAX_PWM (used by the ROS bridge)
+//   M,<left>,<right>   signed wheel PWM, 10-bit duty (0-1023), clamped to +/-MAX_PWM
 //   stop | forward | patrol | backward | left | right   (legacy text commands)
 //   speed <0-MAX_PWM>  PWM used by the legacy commands
 //
@@ -33,12 +33,12 @@ const int LEFT_EN = 27;
 const int LEFT_IN_A = 32;     // IN3
 const int LEFT_IN_B = 14;     // IN4
 
-// Wiring polarity. Each motor has its black wire on the driver's first output (OUT1 right,
-// OUT3 left, following IN_A) and its red wire on the second (OUT2 / OUT4). Red is the forward
-// direction, so driving IN_A high would spin the wheel backwards -> both are reversed.
+// Wiring polarity, as verified with the wheels off the ground using the senior1typetest
+// sketch (RIGHT_FORWARD_IN1_HIGH = true, LEFT_FORWARD_IN3_HIGH = false): forward is IN1 high
+// for the right motor and IN3 low for the left one, so only the left motor is reversed.
 // If a wheel ever turns the wrong way for a positive command, flip its flag here.
 const bool LEFT_REVERSED = true;
-const bool RIGHT_REVERSED = true;
+const bool RIGHT_REVERSED = false;
 
 // Encoder pins - not used yet. GPIO 34/35 are input-only with no internal pull-ups.
 // Never use a boot-strapping pin here (0, 2, 5, 12, 15): an encoder holding GPIO 12 high at
@@ -55,10 +55,17 @@ const int LEFT_ENCODER_WHITE = 35;
 #define ULTRA_RIGHT_ECHO 17
 
 // ==================== SETTINGS ====================
-const int MAX_PWM = 150;              // hard cap on any wheel PWM, every command path
-const int DEFAULT_SPEED_PWM = 95;     // legacy-command speed until "speed N" is received
+// Motor PWM: 10-bit duty (0-1023) at 10 kHz, as in the senior1typetest sketch, where 655
+// (~64 %) drove the robot well. The 8-bit analogWrite used before was too weak at low duty.
+const int PWM_FREQUENCY_HZ = 10000;
+const int PWM_BITS = 10;
+const int LEFT_PWM_CHANNEL = 1;       // LEDC channels (Arduino-ESP32 2.x API)
+const int RIGHT_PWM_CHANNEL = 0;
+const int MAX_PWM = 655;              // hard cap on any wheel PWM, every command path
+const int DEFAULT_SPEED_PWM = 655;    // legacy-command speed until "speed N" is received
 
-const unsigned long WATCHDOG_MS = 500;           // stop if no valid command this long
+const unsigned long WATCHDOG_MS = 250;           // stop if no valid command this long
+                                                 // (the ROS bridge resends every 100 ms)
 const unsigned long SENSOR_PERIOD_MS = 40;       // one sensor per tick, alternating
 const unsigned long TELEMETRY_MS = 100;
 const unsigned long STATUS_MS = 500;
@@ -109,7 +116,7 @@ void updateSensors();
 void controlMotors();
 void runAvoidance(int &left, int &right);
 void applyMotors(int left, int right);
-void setMotor(int en, int inA, int inB, int pwm);
+void setMotor(int channel, int inA, int inB, int pwm);
 void sendTelemetry();
 float readUltrasonicFeet(int trigPin, int echoPin);
 bool validDistance(float distanceFeet);
@@ -125,6 +132,10 @@ void setup() {
   pinMode(RIGHT_EN, OUTPUT);
   pinMode(RIGHT_IN_A, OUTPUT);
   pinMode(RIGHT_IN_B, OUTPUT);
+  ledcSetup(LEFT_PWM_CHANNEL, PWM_FREQUENCY_HZ, PWM_BITS);
+  ledcSetup(RIGHT_PWM_CHANNEL, PWM_FREQUENCY_HZ, PWM_BITS);
+  ledcAttachPin(LEFT_EN, LEFT_PWM_CHANNEL);
+  ledcAttachPin(RIGHT_EN, RIGHT_PWM_CHANNEL);
   applyMotors(0, 0);
 
   pinMode(ULTRA_LEFT_TRIG, OUTPUT);
@@ -388,26 +399,26 @@ void applyMotors(int left, int right) {
   left = constrain(left, -MAX_PWM, MAX_PWM);
   right = constrain(right, -MAX_PWM, MAX_PWM);
 
-  setMotor(LEFT_EN, LEFT_IN_A, LEFT_IN_B, LEFT_REVERSED ? -left : left);
-  setMotor(RIGHT_EN, RIGHT_IN_A, RIGHT_IN_B, RIGHT_REVERSED ? -right : right);
+  setMotor(LEFT_PWM_CHANNEL, LEFT_IN_A, LEFT_IN_B, LEFT_REVERSED ? -left : left);
+  setMotor(RIGHT_PWM_CHANNEL, RIGHT_IN_A, RIGHT_IN_B, RIGHT_REVERSED ? -right : right);
 
   appliedLeft = left;
   appliedRight = right;
 }
 
-void setMotor(int en, int inA, int inB, int pwm) {
+void setMotor(int channel, int inA, int inB, int pwm) {
   if (pwm > 0) {
     digitalWrite(inA, HIGH);
     digitalWrite(inB, LOW);
-    analogWrite(en, pwm);
+    ledcWrite(channel, pwm);
   } else if (pwm < 0) {
     digitalWrite(inA, LOW);
     digitalWrite(inB, HIGH);
-    analogWrite(en, -pwm);
+    ledcWrite(channel, -pwm);
   } else {
     digitalWrite(inA, LOW);
     digitalWrite(inB, LOW);
-    analogWrite(en, 0);
+    ledcWrite(channel, 0);
   }
 }
 

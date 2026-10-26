@@ -5,8 +5,11 @@ framework): L298N-style motor driver and two HC-SR04 ultrasonics. The original
 v1 firmware is preserved in git history (commit "S0-4").
 
 ## What changed from v1
-- **PWM cap** (`MAX_PWM = 150`) enforced in one output function; applies to every command.
-- **Watchdog:** no valid command for 500 ms -> motors stop. The sender must resend (~every 200 ms).
+- **Motor PWM:** 10-bit duty (0-1023) at 10 kHz on LEDC channels, as in the senior1typetest
+  sketch. **PWM cap** (`MAX_PWM = 655`, ~64 %) enforced in one output function; applies to
+  every command.
+- **Watchdog:** no valid command for 250 ms -> motors stop. The sender must resend (the ROS
+  bridge does every 100 ms).
 - **Non-blocking serial** line parser (v1 `readStringUntil` could block up to 1 s). Bad lines are
   rejected with `E,...` and do not feed the watchdog.
 - **`M,<left>,<right>`** signed-PWM command, matching `esp32_serial_bridge.py` (`/cmd_vel`).
@@ -20,9 +23,9 @@ v1 firmware is preserved in git history (commit "S0-4").
 ## Serial protocol (115200 baud, newline-terminated)
 | Direction | Message | Meaning |
 |---|---|---|
-| to ESP32 | `M,<l>,<r>` | wheel PWM, -150..150 |
+| to ESP32 | `M,<l>,<r>` | wheel PWM (10-bit duty), -655..655 |
 | to ESP32 | `stop` `forward` `patrol` `backward` `left` `right` | legacy modes |
-| to ESP32 | `speed <n>` | legacy-mode PWM, clamped 0..150 |
+| to ESP32 | `speed <n>` | legacy-mode PWM, clamped 0..655 (default 655) |
 | from ESP32 | `U,<left_ft>,<right_ft>` | distances in feet, `-1` = none |
 | from ESP32 | `S,<mode>,<l>,<r>,<avoidState>` | status, 2 Hz |
 | from ESP32 | `I,<text>` / `E,<text>` | info / safety event |
@@ -37,10 +40,10 @@ v1 firmware is preserved in git history (commit "S0-4").
 | Right encoder: blue / white (unused yet) | 13 / 18 |
 | Left encoder: blue / white (unused yet) | 34 / 35 |
 
-Motor polarity: on both motors the black wire is on the driver's first output (OUT1 right,
-OUT3 left) and red on the second (OUT2 / OUT4), and red is the forward direction. So
-`LEFT_REVERSED` and `RIGHT_REVERSED` are both `true`. If a wheel turns the wrong way for a
-positive command, flip its flag at the top of the sketch instead of rewiring.
+Motor polarity, verified with the wheels off the ground using the senior1typetest sketch:
+forward is IN1 high on the right motor and IN3 low on the left one, so `LEFT_REVERSED = true`
+and `RIGHT_REVERSED = false`. If a wheel turns the wrong way for a positive command, flip its
+flag at the top of the sketch instead of rewiring.
 
 ### Hardware cautions
 - **Never put a wire on a boot-strapping pin (GPIO 0, 2, 5, 12, 15).** The right encoder's white wire

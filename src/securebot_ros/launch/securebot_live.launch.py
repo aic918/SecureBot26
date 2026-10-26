@@ -13,7 +13,7 @@ It also starts the motion chain, so only one program ever opens the ESP32 port:
   ros2 launch securebot_ros securebot_live.launch.py enable_motors:=false show_camera:=false
 
 enable_motors:=false runs vision only (no bridge, nothing opens the ESP32 port).
-motor_speed sets the firmware's patrol PWM; esp32_port overrides the ESP32's USB socket path.
+motor_speed sets the firmware's patrol PWM (10-bit duty, default 655); esp32_port overrides the ESP32's USB socket path.
 idle_action:=stop (for Nav2) stops the robot when no /nav_cmd_vel arrives instead of patrolling.
 Any parameter left empty keeps the node's own default.
 """

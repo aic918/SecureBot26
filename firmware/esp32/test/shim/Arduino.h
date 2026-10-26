@@ -21,6 +21,10 @@ long pulseIn(int pin, int state, unsigned long timeout);
 void pinMode(int pin, int mode);
 void digitalWrite(int pin, int value);
 void analogWrite(int pin, int value);
+// ESP32 LEDC (Arduino-ESP32 2.x API)
+double ledcSetup(int channel, double freq, int resolution_bits);
+void ledcAttachPin(int pin, int channel);
+void ledcWrite(int channel, int duty);
 
 struct SerialClass {
   void begin(long) {}

@@ -111,7 +111,8 @@ ros2 launch securebot_ros securebot_teleop.launch.py   # bridge + motion manager
 ros2 run securebot_ros teleop_keyboard                 # w/s/a/d, q/e curves, space stop, x quit
 ```
 Starts at 0.15 m/s and 0.6 rad/s (`+`/`-` change it, capped at 0.25 m/s and 1.0 rad/s).
-`min_pwm:=70` lifts slow commands to a PWM that turns the wheels; raise it if they only hum.
+`min_pwm:=500` (of 1023) lifts slow commands to a PWM that turns the wheels; raise it if they
+only hum.
 
 ## Navigation (Nav2)
 AMCL localizes on a saved map (starting pose = where mapping started, or RViz "2D Pose
@@ -138,7 +139,7 @@ motion_manager_node --/esp32/mode (stop|patrol|drive), /cmd_vel--> esp32_serial_
 ```
 `motion_manager_node` stops when security says stop or goes quiet for 1 s, drives with
 `/nav_cmd_vel` while one arrives (Nav2/teleop later), and otherwise uses the firmware's own
-patrol (drive forward + ultrasonic avoidance). The bridge resends the command every 0.2 s,
+patrol (drive forward + ultrasonic avoidance). The bridge resends the command every 0.1 s (firmware watchdog 250 ms),
 treats inputs older than 0.5 s as stop, drops the serial backlog on startup, and publishes
 `/ultrasonic/left|right` and `/esp32/status`.
 

@@ -18,6 +18,12 @@ long pulseIn(int pin, int, unsigned long) { return g_echo_us[pin]; }
 void pinMode(int, int) {}
 void digitalWrite(int pin, int v) { g_pin[pin] = v; }
 void analogWrite(int pin, int v) { g_pwm[pin] = v; }
+static int g_chan_pin[16];
+static int g_chan_bits[16];
+static double g_chan_freq[16];
+double ledcSetup(int ch, double f, int bits) { g_chan_freq[ch] = f; g_chan_bits[ch] = bits; return f; }
+void ledcAttachPin(int pin, int ch) { g_chan_pin[ch] = pin; }
+void ledcWrite(int ch, int duty) { g_pwm[g_chan_pin[ch]] = duty; }  // recorded by EN pin
 SerialClass Serial;
 int SerialClass::available() { return (int)(g_in.size() - g_in_pos); }
 int SerialClass::read() { return g_in_pos < g_in.size() ? (unsigned char)g_in[g_in_pos++] : -1; }
@@ -49,9 +55,9 @@ static int rightPWM() {
 }
 static void send(const std::string &s) { g_in += s; }
 static void step(int ms) { for (int i = 0; i < ms; i++) { g_ms++; loop(); } }
-// step while resending `cmd` every 200 ms like the Jetson does
+// step while resending `cmd` every 100 ms like the Jetson's bridge does
 static void stepHB(int ms, const std::string &cmd) {
-  for (int i = 0; i < ms; i++) { if (g_ms % 200 == 0) send(cmd + "\n"); g_ms++; loop(); }
+  for (int i = 0; i < ms; i++) { if (g_ms % 100 == 0) send(cmd + "\n"); g_ms++; loop(); }
 }
 static bool outHas(const char *s) { return g_out.find(s) != std::string::npos; }
 static void boot() { memset(g_pin, 0, sizeof g_pin); memset(g_pwm, 0, sizeof g_pwm); setup(); }
@@ -75,7 +81,7 @@ static void t_drive_and_clamp() {
 }
 static void t_speed_cap() {
   boot();
-  send("speed 250\n"); send("patrol\n"); step(5);
+  send("speed 2000\n"); send("patrol\n"); step(5);
   CHECK(leftPWM() == MAX_PWM && rightPWM() == MAX_PWM);
   send("speed -5\n"); step(5);
   CHECK(leftPWM() == 0 && rightPWM() == 0);
@@ -88,9 +94,9 @@ static void t_output_stage_cap() {
 }
 static void t_watchdog() {
   boot();
-  send("M,100,100\n"); step(400);
+  send("M,100,100\n"); step(200);
   CHECK(leftPWM() == 100);
-  step(150);                                   // 550 ms with no command
+  step(100);                                   // 300 ms with no command (> WATCHDOG_MS)
   CHECK(leftPWM() == 0 && rightPWM() == 0);
   CHECK(outHas("E,watchdog"));
 }
@@ -148,14 +154,14 @@ static void t_single_glitch_ignored() {
 static void t_patrol_avoidance_cycle() {
   boot();
   stepHB(300, "patrol");
-  CHECK(leftPWM() == 95 && rightPWM() == 95);
+  CHECK(leftPWM() == DEFAULT_SPEED_PWM && rightPWM() == DEFAULT_SPEED_PWM);
   g_echo_us[ULTRA_LEFT_ECHO] = ECHO_HALF_FT; g_echo_us[ULTRA_RIGHT_ECHO] = ECHO_HALF_FT;
   bool sawStop = false, sawReverse = false, sawRotate = false;
   for (int i = 0; i < 2000 && !sawRotate; i++) {
     stepHB(1, "patrol");
     if (avoidState == 1 && leftPWM() == 0) sawStop = true;
-    if (leftPWM() == -95 && rightPWM() == -95) sawReverse = true;
-    if (leftPWM() == 95 && rightPWM() == -95) sawRotate = true;
+    if (leftPWM() == -DEFAULT_SPEED_PWM && rightPWM() == -DEFAULT_SPEED_PWM) sawReverse = true;
+    if (leftPWM() == DEFAULT_SPEED_PWM && rightPWM() == -DEFAULT_SPEED_PWM) sawRotate = true;
   }
   CHECK(sawStop && sawReverse && sawRotate);
   g_echo_us[ULTRA_LEFT_ECHO] = ECHO_2FT; g_echo_us[ULTRA_RIGHT_ECHO] = ECHO_2FT;
@@ -163,7 +169,7 @@ static void t_patrol_avoidance_cycle() {
   for (int i = 0; i < 1500 && !resumed; i++) {
     stepHB(1, "patrol");
     if (avoidState == 3 && leftPWM() == 0) sawSettle = true;
-    if (avoidState == 0 && leftPWM() == 95 && rightPWM() == 95) resumed = true;
+    if (avoidState == 0 && leftPWM() == DEFAULT_SPEED_PWM && rightPWM() == DEFAULT_SPEED_PWM) resumed = true;
   }
   CHECK(sawSettle && resumed);
 }
@@ -211,24 +217,37 @@ static void t_pinout() {
 }
 
 static void t_polarity() {
-  // As wired, red (OUT2 right / OUT4 left, driven by IN_B) is the forward direction.
-  CHECK(LEFT_REVERSED && RIGHT_REVERSED);
+  // Verified with the senior1typetest sketch: forward = right IN1 (RIGHT_IN_A) high,
+  // left IN3 (LEFT_IN_A) low.
+  CHECK(LEFT_REVERSED && !RIGHT_REVERSED);
   boot();
   send("M,100,100\n"); step(5);                  // both wheels forward
   CHECK(g_pin[LEFT_IN_A] == LOW && g_pin[LEFT_IN_B] == HIGH && g_pwm[LEFT_EN] == 100);
-  CHECK(g_pin[RIGHT_IN_A] == LOW && g_pin[RIGHT_IN_B] == HIGH && g_pwm[RIGHT_EN] == 100);
+  CHECK(g_pin[RIGHT_IN_A] == HIGH && g_pin[RIGHT_IN_B] == LOW && g_pwm[RIGHT_EN] == 100);
   send("M,-100,-100\n"); step(5);                // both wheels backward
   CHECK(g_pin[LEFT_IN_A] == HIGH && g_pin[LEFT_IN_B] == LOW);
-  CHECK(g_pin[RIGHT_IN_A] == HIGH && g_pin[RIGHT_IN_B] == LOW);
+  CHECK(g_pin[RIGHT_IN_A] == LOW && g_pin[RIGHT_IN_B] == HIGH);
   send("stop\n"); step(5);                       // stopped: both inputs low
   CHECK(g_pin[LEFT_IN_A] == LOW && g_pin[LEFT_IN_B] == LOW && g_pwm[LEFT_EN] == 0);
   CHECK(g_pin[RIGHT_IN_A] == LOW && g_pin[RIGHT_IN_B] == LOW && g_pwm[RIGHT_EN] == 0);
 }
 
+static void t_pwm_setup() {
+  // 10-bit duty at 10 kHz on both enable pins, like the senior1typetest sketch.
+  boot();
+  CHECK(g_chan_pin[LEFT_PWM_CHANNEL] == LEFT_EN && g_chan_pin[RIGHT_PWM_CHANNEL] == RIGHT_EN);
+  CHECK(LEFT_PWM_CHANNEL != RIGHT_PWM_CHANNEL);
+  CHECK(g_chan_bits[LEFT_PWM_CHANNEL] == 10 && g_chan_bits[RIGHT_PWM_CHANNEL] == 10);
+  CHECK(g_chan_freq[LEFT_PWM_CHANNEL] == 10000 && g_chan_freq[RIGHT_PWM_CHANNEL] == 10000);
+  CHECK(MAX_PWM <= 1023 && MAX_PWM == 655);
+  send("M,655,655\n"); step(5);
+  CHECK(g_pwm[LEFT_EN] == 655 && g_pwm[RIGHT_EN] == 655);
+}
+
 struct T { const char *name; void (*fn)(); };
 int main(int argc, char **argv) {
   T tests[] = {
-    {"boot", t_boot}, {"pinout", t_pinout}, {"polarity", t_polarity}, {"drive_and_clamp", t_drive_and_clamp}, {"speed_cap", t_speed_cap}, {"output_stage_cap", t_output_stage_cap},
+    {"boot", t_boot}, {"pinout", t_pinout}, {"polarity", t_polarity}, {"pwm_setup", t_pwm_setup}, {"drive_and_clamp", t_drive_and_clamp}, {"speed_cap", t_speed_cap}, {"output_stage_cap", t_output_stage_cap},
     {"watchdog", t_watchdog}, {"heartbeat_keeps_running", t_heartbeat_keeps_running},
     {"partial_line", t_partial_line}, {"bad_input", t_bad_input},
     {"bad_command_not_heartbeat", t_bad_command_not_heartbeat},
