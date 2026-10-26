@@ -40,3 +40,14 @@ def test_parse_lines():
     assert parse_line('E,watchdog: no command, stopped') == ('E', 'watchdog: no command, stopped')
     assert parse_line('U,abc,1') is None
     assert parse_line('LEFT: 9.28 ft') is None
+
+
+def test_min_pwm_lifts_small_commands_but_not_zero():
+    args = PWM_ARGS + (70,)
+    assert twist_to_pwm(0.0, 0.0, *args) == (0, 0)
+    assert twist_to_pwm(0.05, 0.0, *args) == (70, 70)          # 21 -> 70
+    assert twist_to_pwm(0.0, 0.8, *args) == (-70, 70)          # in-place turn, +/-38 -> +/-70
+    assert twist_to_pwm(0.3, 0.0, *args) == (129, 129)         # already above the floor
+    left, right = twist_to_pwm(0.06, 0.4, *args)               # gentle left curve, slow
+    assert right == 70 and 0 < left < right                    # still curves left
+    assert twist_to_pwm(-0.05, 0.0, *args) == (-70, -70)

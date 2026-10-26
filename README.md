@@ -104,6 +104,15 @@ Move the robot slowly (it can be pushed by hand; no wheel odometry is used): abo
 gentle turns, and come back to the start so the map closes the loop. The tower blocks the view
 straight ahead, so turn the robot now and then to let the LiDAR see what it is driving towards.
 
+Drive it from the keyboard instead of pushing (two more terminals; hold a key to move, let go
+to stop; the camera is not needed):
+```bash
+ros2 launch securebot_ros securebot_teleop.launch.py   # bridge + motion manager, keyboard mode
+ros2 run securebot_ros teleop_keyboard                 # w/s/a/d, q/e curves, space stop, x quit
+```
+Starts at 0.15 m/s and 0.6 rad/s (`+`/`-` change it, capped at 0.25 m/s and 1.0 rad/s).
+`min_pwm:=70` lifts slow commands to a PWM that turns the wheels; raise it if they only hum.
+
 ## Serial ownership and the motion chain
 Only `esp32_serial_bridge` opens the ESP32 port. `securebot_live.launch.py` starts the chain:
 ```
