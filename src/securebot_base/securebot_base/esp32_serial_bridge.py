@@ -1,68 +1,142 @@
 #!/usr/bin/env python3
+"""The only program that talks to the ESP32 (firmware 2.0 protocol, see firmware/esp32/).
 
+Inputs
+  /esp32/mode  std_msgs/String  stop | patrol | drive   (published by motion_manager_node)
+  /cmd_vel     geometry_msgs/Twist                       used only in drive mode
+Outputs
+  /ultrasonic/left, /ultrasonic/right  sensor_msgs/Range  (no echo -> +inf, REP-117)
+  /esp32/status  std_msgs/String  the firmware's `S,<mode>,<l>,<r>,<avoid>` line, without "S,"
 
-import serial
+Safety: the current command is resent every `heartbeat_period` (the firmware stops on its own
+after 500 ms without one). A mode or /cmd_vel older than `command_timeout` counts as "stop",
+so if the motion manager or the planner dies, the robot stops.
+"""
 import threading
+import time
 
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import Range
+from std_msgs.msg import String
+import serial
+
+MODES = ('stop', 'patrol', 'drive')
+
+
+def clamp(value, low, high):
+    return max(low, min(high, value))
+
+
+def twist_to_pwm(linear, angular, max_linear_mps, max_angular_rps, wheel_base_m, max_pwm):
+    """Differential-drive Twist -> (left_pwm, right_pwm), each clamped to +/-max_pwm."""
+    linear = clamp(linear, -max_linear_mps, max_linear_mps)
+    angular = clamp(angular, -max_angular_rps, max_angular_rps)
+    left = linear - angular * wheel_base_m / 2.0
+    right = linear + angular * wheel_base_m / 2.0
+    to_pwm = lambda v: int(clamp(round(v / max_linear_mps * max_pwm), -max_pwm, max_pwm))  # noqa: E731
+    return to_pwm(left), to_pwm(right)
+
+
+def choose_command(mode, mode_age, cmd, cmd_age, timeout, pwm_args):
+    """What to send to the ESP32 now. Stale mode -> stop; drive with a stale /cmd_vel -> M,0,0."""
+    if mode not in MODES or mode_age > timeout or mode == 'stop':
+        return 'stop'
+    if mode == 'patrol':
+        return 'patrol'
+    if cmd is None or cmd_age > timeout:
+        return 'M,0,0'
+    left, right = twist_to_pwm(cmd[0], cmd[1], *pwm_args)
+    return f'M,{left},{right}'
+
+
+def parse_line(line):
+    """('U', left_ft, right_ft) | ('S', 'drive,90,90,0') | ('I'/'E', text) | None."""
+    parts = line.split(',')
+    if parts[0] == 'U' and len(parts) == 3:
+        try:
+            return 'U', float(parts[1]), float(parts[2])
+        except ValueError:
+            return None
+    if parts[0] in ('S', 'I', 'E') and len(parts) > 1:
+        return parts[0], line[2:]
+    return None
 
 
 class ESP32SerialBridge(Node):
     def __init__(self):
         super().__init__('esp32_serial_bridge')
 
-        self.declare_parameter('port', '/dev/ttyUSB0')
+        # Default: the ESP32's USB socket (path 2.3). /dev/ttyUSBn numbers can swap with the
+        # LiDAR, which uses the same CP2102 adapter with the same serial number.
+        self.declare_parameter('port', '/dev/serial/by-path/platform-3610000.usb-usb-0:2.3:1.0-port0')
         self.declare_parameter('baudrate', 115200)
         self.declare_parameter('max_pwm', 150)
         self.declare_parameter('max_linear_mps', 0.35)
         self.declare_parameter('max_angular_rps', 1.5)
         self.declare_parameter('wheel_base_m', 0.22)
+        self.declare_parameter('patrol_speed', 88)      # PWM the firmware's own patrol uses
+        self.declare_parameter('heartbeat_period', 0.2)
+        self.declare_parameter('command_timeout', 0.5)
 
-        self.port = self.get_parameter('port').value
-        self.baudrate = self.get_parameter('baudrate').value
-        self.max_pwm = int(self.get_parameter('max_pwm').value)
-        self.max_linear_mps = float(self.get_parameter('max_linear_mps').value)
-        self.max_angular_rps = float(self.get_parameter('max_angular_rps').value)
-        self.wheel_base_m = float(self.get_parameter('wheel_base_m').value)
+        p = lambda name: self.get_parameter(name).value  # noqa: E731
+        self.port = p('port')
+        self.pwm_args = (float(p('max_linear_mps')), float(p('max_angular_rps')),
+                         float(p('wheel_base_m')), int(p('max_pwm')))
+        self.patrol_speed = int(p('patrol_speed'))
+        self.timeout = float(p('command_timeout'))
 
-        self.serial_port = serial.Serial(self.port, self.baudrate, timeout=0.05)
+        self.serial_port = serial.Serial(self.port, int(p('baudrate')), timeout=0.05)
+        self.drain_startup_backlog()
+        self.write_line('stop')
+        self.write_line(f'speed {self.patrol_speed}')
 
-        self.cmd_sub = self.create_subscription(
-            Twist,
-            '/cmd_vel',
-            self.cmd_vel_callback,
-            10
-        )
+        self.mode, self.mode_time = 'stop', 0.0
+        self.cmd, self.cmd_time = None, 0.0
+        self.last_sent = None
 
+        self.create_subscription(String, '/esp32/mode', self.mode_callback, 10)
+        self.create_subscription(Twist, '/cmd_vel', self.cmd_vel_callback, 10)
         self.left_pub = self.create_publisher(Range, '/ultrasonic/left', 10)
         self.right_pub = self.create_publisher(Range, '/ultrasonic/right', 10)
+        self.status_pub = self.create_publisher(String, '/esp32/status', 10)
+        self.create_timer(float(p('heartbeat_period')), self.send_current_command)
 
         self.reader_thread = threading.Thread(target=self.read_serial_loop, daemon=True)
         self.reader_thread.start()
 
-        self.get_logger().info(f'ESP32 bridge running on {self.port} at {self.baudrate} baud')
+        self.get_logger().info(f'ESP32 bridge on {self.port}, patrol speed {self.patrol_speed}')
 
-    def clamp(self, value, low, high):
-        return max(low, min(high, value))
+    def drain_startup_backlog(self):
+        """Opening the port resets the ESP32, and the USB driver hands over everything the
+        board printed while no program had the port open. Wait for the reset, then drop it."""
+        time.sleep(2.0)
+        self.serial_port.reset_input_buffer()
+        end = time.monotonic() + 0.3
+        while time.monotonic() < end:
+            self.serial_port.read(4096)
+
+    def write_line(self, text):
+        try:
+            self.serial_port.write((text + '\n').encode())
+        except serial.SerialException as e:
+            self.get_logger().error(f'Serial write failed: {e}', throttle_duration_sec=2.0)
+
+    def mode_callback(self, msg):
+        self.mode, self.mode_time = msg.data.strip().lower(), time.monotonic()
 
     def cmd_vel_callback(self, msg):
-        linear = self.clamp(msg.linear.x, -self.max_linear_mps, self.max_linear_mps)
-        angular = self.clamp(msg.angular.z, -self.max_angular_rps, self.max_angular_rps)
+        self.cmd, self.cmd_time = (msg.linear.x, msg.angular.z), time.monotonic()
 
-        left_speed = linear - (angular * self.wheel_base_m / 2.0)
-        right_speed = linear + (angular * self.wheel_base_m / 2.0)
-
-        left_pwm = int((left_speed / self.max_linear_mps) * self.max_pwm)
-        right_pwm = int((right_speed / self.max_linear_mps) * self.max_pwm)
-
-        left_pwm = self.clamp(left_pwm, -self.max_pwm, self.max_pwm)
-        right_pwm = self.clamp(right_pwm, -self.max_pwm, self.max_pwm)
-
-        command = f'M,{left_pwm},{right_pwm}\n'
-        self.serial_port.write(command.encode('utf-8'))
+    def send_current_command(self):
+        now = time.monotonic()
+        command = choose_command(self.mode, now - self.mode_time, self.cmd, now - self.cmd_time,
+                                 self.timeout, self.pwm_args)
+        self.write_line(command)          # every period: this is the watchdog heartbeat
+        if command != self.last_sent:
+            self.get_logger().info(f'ESP32 <- {command}')
+            self.last_sent = command
 
     def publish_range(self, publisher, distance_ft, frame_id):
         msg = Range()
@@ -80,29 +154,25 @@ class ESP32SerialBridge(Node):
         while rclpy.ok():
             try:
                 line = self.serial_port.readline().decode('utf-8', errors='ignore').strip()
-
-                if not line:
-                    continue
-
-                parts = line.split(',')
-
-                # Expected from ESP32:
-                # U,left_distance_ft,right_distance_ft
-                if parts[0] == 'U' and len(parts) == 3:
-                    left_ft = float(parts[1])
-                    right_ft = float(parts[2])
-
-                    self.publish_range(self.left_pub, left_ft, 'left_ultrasonic')
-                    self.publish_range(self.right_pub, right_ft, 'right_ultrasonic')
-
             except Exception as e:
-                self.get_logger().warn(f'Serial read error: {e}')
+                self.get_logger().warn(f'Serial read error: {e}', throttle_duration_sec=2.0)
+                time.sleep(0.5)
+                continue
+            parsed = parse_line(line) if line else None
+            if parsed is None:
+                continue
+            if parsed[0] == 'U':
+                self.publish_range(self.left_pub, parsed[1], 'left_ultrasonic')
+                self.publish_range(self.right_pub, parsed[2], 'right_ultrasonic')
+            elif parsed[0] == 'S':
+                self.status_pub.publish(String(data=parsed[1]))
+            elif parsed[0] == 'E':
+                self.get_logger().warn(f'ESP32: {parsed[1]}')
+            else:
+                self.get_logger().info(f'ESP32: {parsed[1]}')
 
     def stop_motors(self):
-        try:
-            self.serial_port.write(b'M,0,0\n')
-        except Exception:
-            pass
+        self.write_line('stop')
 
 
 def main(args=None):
@@ -116,7 +186,8 @@ def main(args=None):
     finally:
         node.stop_motors()
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

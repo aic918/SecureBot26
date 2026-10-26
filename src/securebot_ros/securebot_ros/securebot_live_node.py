@@ -1,12 +1,10 @@
 import pickle
 from pathlib import Path
-import time
 
 import cv2
 import face_recognition
 import numpy as np
 from ultralytics import YOLO
-import serial
 
 import rclpy
 from rclpy.node import Node
@@ -20,6 +18,9 @@ class SecureBotLiveNode(Node):
         self.person_pub = self.create_publisher(Bool, "/person_detected", 10)
         self.face_status_pub = self.create_publisher(String, "/face_status", 10)
         self.recognized_name_pub = self.create_publisher(String, "/recognized_name", 10)
+        # stop | patrol: the security decision; motion_manager_node turns it into wheel
+        # commands and esp32_serial_bridge (the only program on the ESP32 port) sends them.
+        self.motion_pub = self.create_publisher(String, "/security/motion", 10)
 
         self.declare_parameter(
             "encodings_file",
@@ -36,11 +37,6 @@ class SecureBotLiveNode(Node):
         self.declare_parameter("face_interval", 5)
         self.declare_parameter("show_camera", True)
 
-        # ESP32 settings
-        self.declare_parameter("esp32_port", "/dev/ttyUSB0")
-        self.declare_parameter("esp32_baud", 115200)
-        self.declare_parameter("enable_motors", True)
-        self.declare_parameter("motor_speed", 88)
 
         self.encodings_file = Path(self.get_parameter("encodings_file").value).expanduser()
         self.model_path = str(Path(self.get_parameter("model_path").value).expanduser())
@@ -51,21 +47,8 @@ class SecureBotLiveNode(Node):
         self.face_interval = self.get_parameter("face_interval").value
         self.show_camera = self.get_parameter("show_camera").value
 
-        self.esp32_port = self.get_parameter("esp32_port").value
-        self.esp32_baud = self.get_parameter("esp32_baud").value
-        self.enable_motors = self.get_parameter("enable_motors").value
-        self.motor_speed = int(self.get_parameter("motor_speed").value)
-
-        self.esp = None
         self.last_motor_command = None
-        self.last_motor_send = 0.0
-        # ESP32 watchdog stops the robot if no command arrives for 500 ms,
-        # so the current command is resent at this period.
-        self.heartbeat_period = 0.2
         self.demo_running = False
-
-        if self.enable_motors:
-            self.connect_esp32()
 
         self.get_logger().info("[INFO] Loading YOLO...")
         self.model = YOLO(self.model_path)
@@ -91,44 +74,16 @@ class SecureBotLiveNode(Node):
         self.get_logger().info("SecureBot live vision node started.")
         self.get_logger().info("Controls: S=start demo, X=stop robot, Q=quit")
         self.get_logger().info(f"Person detection threshold: {self.yolo_confidence:.2f}")
-        self.get_logger().info(f"Motor speed: {self.motor_speed}")
 
         self.timer = self.create_timer(0.03, self.process_frame)
 
-    def connect_esp32(self):
-        try:
-            self.esp = serial.Serial(self.esp32_port, self.esp32_baud, timeout=1)
-            time.sleep(2)
-            self.esp.reset_input_buffer()
-
-            self.send_motor_command("stop")
-
-            self.send_motor_command(f"speed {self.motor_speed}")
-
-            self.get_logger().info(
-                f"[INFO] Connected to ESP32 on {self.esp32_port} at {self.esp32_baud}"
-            )
-        except Exception as e:
-            self.esp = None
-            self.get_logger().error(f"[ERROR] Could not connect to ESP32: {e}")
-
     def send_motor_command(self, command):
-        if not self.enable_motors or self.esp is None:
-            return
-
-        try:
-            now = time.monotonic()
-            changed = command != self.last_motor_command
-            heartbeat_due = now - self.last_motor_send >= self.heartbeat_period
-
-            if changed or heartbeat_due or command.startswith("speed"):
-                self.esp.write((command + "\n").encode())
-                if changed or command.startswith("speed"):
-                    self.get_logger().info(f"Sent to ESP32: {command}")
-                self.last_motor_command = command
-                self.last_motor_send = now
-        except Exception as e:
-            self.get_logger().error(f"[ERROR] Failed to send command to ESP32: {e}")
+        """Publish the security decision (stop | patrol). Sent every frame, so the motion
+        manager can treat silence (this node crashed or hung) as stop."""
+        self.motion_pub.publish(String(data=command))
+        if command != self.last_motor_command:
+            self.get_logger().info(f"Security motion: {command}")
+            self.last_motor_command = command
 
     def load_known_faces(self):
         if not self.encodings_file.exists():
@@ -388,10 +343,7 @@ class SecureBotLiveNode(Node):
                 padding=5
             )
 
-            threshold_text = (
-                f"Person confidence required: {self.yolo_confidence:.2f}+ | "
-                f"Speed: {self.motor_speed}"
-            )
+            threshold_text = f"Person confidence required: {self.yolo_confidence:.2f}+"
 
             self.draw_text_with_bg(
                 frame,
@@ -425,9 +377,6 @@ class SecureBotLiveNode(Node):
 
     def destroy_node(self):
         self.send_motor_command("stop")
-
-        if self.esp is not None:
-            self.esp.close()
 
         if hasattr(self, "cap") and self.cap is not None:
             self.cap.release()

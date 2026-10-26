@@ -104,6 +104,21 @@ Move the robot slowly (it can be pushed by hand; no wheel odometry is used): abo
 gentle turns, and come back to the start so the map closes the loop. The tower blocks the view
 straight ahead, so turn the robot now and then to let the LiDAR see what it is driving towards.
 
+## Serial ownership and the motion chain
+Only `esp32_serial_bridge` opens the ESP32 port. `securebot_live.launch.py` starts the chain:
+```
+securebot_live_node --/security/motion (stop|patrol)--> motion_manager_node
+motion_manager_node --/esp32/mode (stop|patrol|drive), /cmd_vel--> esp32_serial_bridge --> ESP32
+```
+`motion_manager_node` stops when security says stop or goes quiet for 1 s, drives with
+`/nav_cmd_vel` while one arrives (Nav2/teleop later), and otherwise uses the firmware's own
+patrol (drive forward + ultrasonic avoidance). The bridge resends the command every 0.2 s,
+treats inputs older than 0.5 s as stop, drops the serial backlog on startup, and publishes
+`/ultrasonic/left|right` and `/esp32/status`.
+
+See the LiDAR and both ultrasonics together (robot held in stop):
+`ros2 launch securebot_ros securebot_sensors.launch.py`
+
 ## Contributing
 - Branch from `main` (`feat/<sprint>-<name>`) and open a PR; `main` needs owner review.
 - Test motor changes with the wheels off the ground first.

@@ -1,0 +1,79 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid (1 m)
+      Enabled: true
+      Cell Size: 1
+      Plane Cell Count: 12
+      Color: 160; 160; 164
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+      Marker Scale: 0.4
+    - Class: rviz_default_plugins/LaserScan
+      Name: Scan (filtered, /scan)
+      Enabled: true
+      Topic:
+        Value: /scan
+        Depth: 5
+        Reliability Policy: Best Effort
+      Color Transformer: FlatColor
+      Color: 0; 200; 120
+      Style: Points
+      Size (Pixels): 4
+      Decay Time: 0
+    - Class: rviz_default_plugins/LaserScan
+      Name: Scan (raw, /scan_raw)
+      Enabled: false
+      Topic:
+        Value: /scan_raw
+        Depth: 5
+        Reliability Policy: Best Effort
+      Color Transformer: FlatColor
+      Color: 255; 140; 0
+      Style: Points
+      Size (Pixels): 3
+      Decay Time: 0
+    - Class: rviz_default_plugins/Range
+      Name: Ultrasonic left
+      Enabled: true
+      Topic:
+        Value: /ultrasonic/left
+        Depth: 5
+        Reliability Policy: Best Effort
+      Color: 60; 140; 255
+      Alpha: 0.5
+      Buffer Length: 1
+    - Class: rviz_default_plugins/Range
+      Name: Ultrasonic right
+      Enabled: true
+      Topic:
+        Value: /ultrasonic/right
+        Depth: 5
+        Reliability Policy: Best Effort
+      Color: 255; 80; 200
+      Alpha: 0.5
+      Buffer Length: 1
+  Enabled: true
+  Global Options:
+    Background Color: 40; 40; 44
+    Fixed Frame: base_link
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/TopDownOrtho
+      Name: Current View
+      Scale: 160
+      X: 0
+      Y: 0
+Window Geometry:
+  Height: 1500
+  Width: 2100
