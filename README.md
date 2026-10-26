@@ -124,9 +124,10 @@ ros2 launch securebot_ros securebot_live.launch.py idle_action:=stop     # robot
 ros2 launch securebot_ros securebot_nav.launch.py map:=$HOME/securebot_ws/maps/<name>.yaml
 ```
 Then "Nav2 Goal" in RViz. `idle_action:=stop` makes the robot stop when Nav2 has no goal
-instead of starting the firmware patrol. The footprint is the case, 495 x 360 mm, centred on
-`base_link` (the case centre until the wheel axle is measured); RViz draws the case to scale
-from `urdf/securebot.urdf`. Sensor positions are still placeholders. First runs: wheels off
+instead of starting the firmware patrol. The footprint is 495 mm long (the case) x 512 mm wide
+(the 192 mm drive wheels sit outside the 360 mm case, 440 mm apart centre to centre), centred
+on `base_link` (the case centre until the axle position is measured); RViz draws the case and
+wheels to scale from `urdf/securebot.urdf`. Sensor positions are still placeholders. First runs: wheels off
 the ground.
 
 ## Serial ownership and the motion chain

@@ -84,7 +84,9 @@ class ESP32SerialBridge(Node):
         self.declare_parameter('min_pwm', 0)            # deadband floor for M,l,r (0 = off)
         self.declare_parameter('max_linear_mps', 0.35)
         self.declare_parameter('max_angular_rps', 1.5)
-        self.declare_parameter('wheel_base_m', 0.22)
+        # Drive wheels 72 mm wide, 368 mm apart inside edge to inside edge -> 440 mm centre to
+        # centre (measured 2026-10-26). Wheel diameter 192 mm (used once encoders give odometry).
+        self.declare_parameter('wheel_base_m', 0.44)
         self.declare_parameter('patrol_speed', 88)      # PWM the firmware's own patrol uses
         self.declare_parameter('heartbeat_period', 0.2)
         self.declare_parameter('command_timeout', 0.5)

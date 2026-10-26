@@ -1,12 +1,16 @@
 <?xml version="1.0"?>
 <!-- SecureBot body, to scale, for RViz. Case: 495 mm long (x) x 360 mm wide (y).
-     base_link is the centre of the case until the drive-wheel axle is measured.
+     Drive wheels: 192 mm diameter, 72 mm wide, outside the case, 368 mm apart inside edge to
+     inside edge = 440 mm centre to centre (512 mm across the outer faces).
+     base_link is on the drive-wheel axle, at the centre of the case lengthwise until the
+     axle's position along the case is measured, at axle height (wheel centre).
      The body height (200 mm, starting 30 mm above base_link) is a placeholder.
      Sensor frames (laser, left/right_ultrasonic) are still published by the launch files'
      static transforms, not by this file, so they are not defined twice. -->
 <robot name="securebot">
   <material name="case_grey"><color rgba="0.55 0.57 0.60 0.85"/></material>
   <material name="front_red"><color rgba="0.90 0.15 0.15 1.0"/></material>
+  <material name="tyre_black"><color rgba="0.10 0.10 0.10 1.0"/></material>
 
   <link name="base_link">
     <visual>
@@ -21,4 +25,29 @@
       <material name="front_red"/>
     </visual>
   </link>
+
+  <!-- Drive wheels, fixed (no wheel joints are published yet), 0.22 m either side of centre -->
+  <link name="left_wheel">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry><cylinder radius="0.096" length="0.072"/></geometry>
+      <material name="tyre_black"/>
+    </visual>
+  </link>
+  <joint name="left_wheel_joint" type="fixed">
+    <parent link="base_link"/><child link="left_wheel"/>
+    <origin xyz="0 0.22 0" rpy="0 0 0"/>
+  </joint>
+
+  <link name="right_wheel">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry><cylinder radius="0.096" length="0.072"/></geometry>
+      <material name="tyre_black"/>
+    </visual>
+  </link>
+  <joint name="right_wheel_joint" type="fixed">
+    <parent link="base_link"/><child link="right_wheel"/>
+    <origin xyz="0 -0.22 0" rpy="0 0 0"/>
+  </joint>
 </robot>
