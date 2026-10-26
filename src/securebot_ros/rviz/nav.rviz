@@ -44,18 +44,18 @@ Visualization Manager:
     Plane Cell Count: 10
     Reference Frame: <Fixed Frame>
     Value: true
-  - Alpha: 1
+  - Alpha: 0.8
     Class: rviz_default_plugins/RobotModel
     Collision Enabled: false
     Description File: ''
     Description Source: Topic
     Description Topic:
       Depth: 5
-      Durability Policy: Volatile
+      Durability Policy: Transient Local
       History Policy: Keep Last
       Reliability Policy: Reliable
       Value: /robot_description
-    Enabled: false
+    Enabled: true
     Links:
       All Links Enabled: true
       Expand Joint Details: false
@@ -65,10 +65,10 @@ Visualization Manager:
     Mass Properties:
       Inertia: false
       Mass: false
-    Name: RobotModel
+    Name: Robot (to scale)
     TF Prefix: ''
     Update Interval: 0
-    Value: false
+    Value: true
     Visual Enabled: true
   - Class: rviz_default_plugins/TF
     Enabled: true
