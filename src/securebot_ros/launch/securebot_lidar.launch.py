@@ -9,7 +9,9 @@ reboots as long as it is plugged into the same socket; /dev/ttyUSBn numbers can 
 the ESP32 (both are CP2102 adapters with the same serial number).
 
 The base_link -> laser transform is a placeholder until the URDF (Sprint 2, S2-3) has the
-measured LiDAR position. laser_yaw turns the laser frame so its +x is the robot's front.
+measured LiDAR position. laser_yaw turns the laser frame so its +x is the robot's front: the
+LiDAR sits right behind the camera tower, and the tower's shadow is at 180 deg in the laser
+frame, so the laser's +x points backwards and the default yaw is pi.
 """
 import os
 
@@ -36,7 +38,7 @@ def generate_launch_description():
         DeclareLaunchArgument('laser_x', default_value='0.0'),
         DeclareLaunchArgument('laser_y', default_value='0.0'),
         DeclareLaunchArgument('laser_z', default_value='0.20'),
-        DeclareLaunchArgument('laser_yaw', default_value='0.0'),
+        DeclareLaunchArgument('laser_yaw', default_value='3.14159'),
         DeclareLaunchArgument('rviz', default_value='false'),
     ]
 
