@@ -131,6 +131,22 @@ on `base_link` (the case centre until the axle position is measured); RViz draws
 wheels to scale from `urdf/securebot.urdf`. Sensor positions are still placeholders. First runs: wheels off
 the ground.
 
+## Autonomous room exploration
+```bash
+ros2 launch securebot_ros securebot_explore.launch.py
+```
+Starts mapping (with RViz), the robot side in keyboard mode (no camera needed), the explore node
+and a "SecureBot Explore" window with **START** / **STOP**. On Start the robot turns a full
+circle in short bursts (so the LiDAR sees past the tower), then repeatedly picks a direction
+that the map shows as free and that leads towards unexplored space (preferring places it has
+not been), turns to it, drives a leg of up to 1.5 m and pauses so the map catches up. An
+ultrasonic reading of 1 ft or less, or a LiDAR point too close, stops it; it backs up and
+picks another direction. It stops by itself when the room is at least 90 % scanned: the
+share of the explored area's edge that is wall rather than unexplored space
+(`coverage_goal:=0.9`). It also stops if the robot does not turn or move when commanded, or
+if the map pose or an ultrasonic goes silent. Unexplored edges (orange) and the chosen heading
+(cyan arrow) show in RViz. Save the map afterwards with `map_saver_cli` (see Mapping).
+
 ## Motor tuning (PWM frequency and power)
 `python3 tools/motor_tune.py` drives the ESP32 directly (stop the bridge first): hold w/s/a/d;
 keys 1/2, 3/4, 5/6, 7/8 step the frequency down/up by 50, 100, 500, 1000 Hz; Shift + the same

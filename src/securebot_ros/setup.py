@@ -38,6 +38,9 @@ entry_points={
         'motion_manager_node = securebot_ros.motion_manager_node:main',
         'simple_patrol_node = securebot_ros.simple_patrol_node:main',
         'teleop_keyboard = securebot_ros.teleop_keyboard:main',
+        'explore_node = securebot_ros.explore_node:main',
+        'explore_panel = securebot_ros.explore_panel:main',
+        'lidar_reset = securebot_ros.lidar_reset:main',
     ],
 },
 

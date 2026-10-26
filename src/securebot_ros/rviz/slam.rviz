@@ -67,6 +67,17 @@ Visualization Manager:
     Name: TF
     Enabled: true
     Marker Scale: 0.4
+  - Class: rviz_default_plugins/MarkerArray
+    Name: Exploration (frontiers + heading)
+    Enabled: true
+    Namespaces:
+      frontiers: true
+      heading: true
+    Topic:
+      Value: /explore/markers
+      Depth: 5
+      Durability Policy: Volatile
+      Reliability Policy: Reliable
   Enabled: true
   Global Options:
     Background Color: 40; 40; 44

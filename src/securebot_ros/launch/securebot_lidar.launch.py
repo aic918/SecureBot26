@@ -18,7 +18,8 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, RegisterEventHandler
+from launch.event_handlers import OnProcessExit
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -50,6 +51,11 @@ def generate_launch_description():
         name='robot_state_publisher', output='screen',
         parameters=[{'robot_description': robot_description}],
     )
+
+    # Stop + soft-reset the A1 first: after an unclean shutdown it can still be scanning, and
+    # rplidar_node then hangs on connect instead of exiting (so respawn would not help).
+    reset = Node(package='securebot_ros', executable='lidar_reset', name='lidar_reset',
+                 output='screen', arguments=[arg('serial_port')])
 
     lidar = Node(
         package='rplidar_ros', executable='rplidar_node', name='rplidar_node', output='screen',
@@ -89,4 +95,5 @@ def generate_launch_description():
         arguments=['-d', os.path.join(share, 'rviz', 'lidar.rviz')],
     )
 
-    return LaunchDescription(args + [lidar, filters, tf, model, rviz])
+    start_lidar = RegisterEventHandler(OnProcessExit(target_action=reset, on_exit=[lidar]))
+    return LaunchDescription(args + [reset, filters, tf, model, rviz, start_lidar])
