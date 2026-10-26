@@ -53,6 +53,15 @@ class TuneStateTest(unittest.TestCase):
         s.key('6', 0.0)
         self.assertEqual(s.freq, mt.FREQ_MAX)
 
+    def test_power_step_keys(self):
+        s = mt.TuneState(power=500)
+        steps = {'!': 490, '@': 500, '#': 475, '$': 500, '%': 450, '^': 500, '&': 400, '*': 500,
+                 '-': 475, '+': 500}
+        for key, expected in steps.items():
+            s.key(key, 0.0)
+            self.assertEqual(s.power, expected, key)
+        self.assertEqual(s.pending, [])                    # power is sent with the next M,l,r
+
     def test_power_limits(self):
         s = mt.TuneState(power=500)
         for _ in range(40):

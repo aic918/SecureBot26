@@ -12,7 +12,8 @@ Hold a key to drive; let go and the robot stops (the firmware's watchdog also st
   w forward   s backward   a spin left   d spin right   space stop
   frequency down / up:  1 / 2  50 Hz   3 / 4  100 Hz   5 / 6  500 Hz   7 / 8  1000 Hz
                         (50..25000 Hz, starts at the firmware's 10000 Hz)
-  + / -  power up / down in steps of 25 (of 1023, 200..850)        q quit
+  power down / up (Shift + the same keys):  ! / @  10   # / $  25   % / ^  50   & / *  100
+                        (of 1023, 200..850; + / - also step it by 25)   q quit
 Lower frequencies give the L298N more torque and a lower, quieter hum; 10 kHz whines.
 Look for the lowest power that starts the robot from standstill on the floor, at a frequency
 whose sound you can live with, and tell the result to whoever sets the firmware defaults.
@@ -29,7 +30,10 @@ ESP32_PORT = '/dev/serial/by-path/platform-3610000.usb-usb-0:2.3:1.0-port0'
 FREQ_STEPS = {'1': -50, '2': 50, '3': -100, '4': 100, '5': -500, '6': 500, '7': -1000, '8': 1000}
 FREQ_MIN, FREQ_MAX = 50, 25000      # the firmware's limits
 MOVES = {'w': (1, 1), 's': (-1, -1), 'a': (-1, 1), 'd': (1, -1), ' ': (0, 0)}
-POWER_MIN, POWER_MAX, POWER_STEP = 200, 850, 25
+# key -> power change (of 1023): Shift + 1..8 on a US keyboard, odd keys down, even keys up
+POWER_STEPS = {'!': -10, '@': 10, '#': -25, '$': 25, '%': -50, '^': 50, '&': -100, '*': 100,
+               '-': -25, '_': -25, '+': 25, '=': 25}
+POWER_MIN, POWER_MAX = 200, 850
 SEND_PERIOD = 0.1     # firmware watchdog is 250 ms
 HOLD_TIME = 0.6       # longer than the terminal's key-repeat delay
 
@@ -54,10 +58,8 @@ class TuneState:
             if freq != self.freq:
                 self.freq = freq
                 self.pending.append(f'freq {self.freq}')
-        elif ch in ('+', '='):
-            self.power = min(POWER_MAX, self.power + POWER_STEP)
-        elif ch in ('-', '_'):
-            self.power = max(POWER_MIN, self.power - POWER_STEP)
+        elif ch in POWER_STEPS:
+            self.power = max(POWER_MIN, min(POWER_MAX, self.power + POWER_STEPS[ch]))
         return True
 
     def command(self, now):
