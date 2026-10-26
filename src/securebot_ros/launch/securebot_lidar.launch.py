@@ -18,7 +18,7 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, RegisterEventHandler
+from launch.actions import DeclareLaunchArgument, OpaqueFunction, RegisterEventHandler
 from launch.event_handlers import OnProcessExit
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
@@ -57,22 +57,27 @@ def generate_launch_description():
     reset = Node(package='securebot_ros', executable='lidar_reset', name='lidar_reset',
                  output='screen', arguments=[arg('serial_port')])
 
-    lidar = Node(
-        package='rplidar_ros', executable='rplidar_node', name='rplidar_node', output='screen',
-        # The A1 sometimes misses the first request or refuses to scan right after the motor
-        # starts; rplidar_node then exits, so start it again instead of giving up.
-        respawn=True, respawn_delay=3.0,
-        parameters=[{
-            'channel_type': 'serial',
-            'serial_port': arg('serial_port'),
-            'serial_baudrate': 115200,
-            'frame_id': 'laser',
-            'inverted': False,
-            'angle_compensate': True,
-            'scan_mode': arg('scan_mode'),
-        }],
-        remappings=[('scan', 'scan_raw')],
-    )
+    def start_after_reset(context):
+        # The driver starts only when lidar_reset exits, which is after an including launch's
+        # scoped group has ended and its arguments are gone, so resolve them now.
+        port, scan_mode = arg('serial_port').perform(context), arg('scan_mode').perform(context)
+        lidar = Node(
+            package='rplidar_ros', executable='rplidar_node', name='rplidar_node', output='screen',
+            # The A1 sometimes misses the first request or refuses to scan right after the motor
+            # starts; rplidar_node then exits, so start it again instead of giving up.
+            respawn=True, respawn_delay=3.0,
+            parameters=[{
+                'channel_type': 'serial',
+                'serial_port': port,
+                'serial_baudrate': 115200,
+                'frame_id': 'laser',
+                'inverted': False,
+                'angle_compensate': True,
+                'scan_mode': scan_mode,
+            }],
+            remappings=[('scan', 'scan_raw')],
+        )
+        return [RegisterEventHandler(OnProcessExit(target_action=reset, on_exit=[lidar]))]
 
     filters = Node(
         package='laser_filters', executable='scan_to_scan_filter_chain', name='lidar_filters',
@@ -95,5 +100,5 @@ def generate_launch_description():
         arguments=['-d', os.path.join(share, 'rviz', 'lidar.rviz')],
     )
 
-    start_lidar = RegisterEventHandler(OnProcessExit(target_action=reset, on_exit=[lidar]))
-    return LaunchDescription(args + [reset, filters, tf, model, rviz, start_lidar])
+    return LaunchDescription(args + [reset, OpaqueFunction(function=start_after_reset),
+                                     filters, tf, model, rviz])
