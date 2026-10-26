@@ -111,8 +111,8 @@ ros2 launch securebot_ros securebot_teleop.launch.py   # bridge + motion manager
 ros2 run securebot_ros teleop_keyboard                 # w/s/a/d, q/e curves, space stop, x quit
 ```
 Starts at 0.15 m/s and 0.6 rad/s (`+`/`-` change it, capped at 0.25 m/s and 1.0 rad/s).
-`min_pwm:=500` (of 1023) lifts slow commands to a PWM that turns the wheels; raise it if they
-only hum.
+The robot needs a PWM of ~650 (of 1023, at 10 kHz) to start moving, so every wheel that should
+turn gets at least 650 (`min_pwm`); for now it drives at one speed and steers and stops.
 
 ## Navigation (Nav2)
 AMCL localizes on a saved map (starting pose = where mapping started, or RViz "2D Pose

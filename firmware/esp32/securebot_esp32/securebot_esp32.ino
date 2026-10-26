@@ -57,19 +57,17 @@ const int LEFT_ENCODER_WHITE = 35;
 #define ULTRA_RIGHT_ECHO 17
 
 // ==================== SETTINGS ====================
-// Motor PWM: 10-bit duty (0-1023), as in the senior1typetest sketch, where 655 (~64 %) drove
-// the robot. The frequency can be changed at run time with `freq <Hz>` while tuning: the L298N
-// loses torque at high frequencies and 10 kHz whines audibly.
+// Motor PWM: 10-bit duty (0-1023) at 10 kHz. Chosen with tools/motor_tune.py on the floor
+// (2026-10-26): the robot needs ~650 to start from standstill (at 500 it needed a push).
+// `freq <Hz>` still changes the frequency at run time for further tuning.
 const int PWM_FREQUENCY_HZ = 10000;
 const int MIN_PWM_FREQ_HZ = 50;
 const int MAX_PWM_FREQ_HZ = 25000;
 const int PWM_BITS = 10;
 const int LEFT_PWM_CHANNEL = 1;       // LEDC channels (Arduino-ESP32 2.x API)
 const int RIGHT_PWM_CHANNEL = 0;
-// Hard cap on any wheel PWM, every command path. Headroom above 655 for tuning; the ROS
-// bridge applies its own, lower max_pwm in normal driving.
-const int MAX_PWM = 850;
-const int DEFAULT_SPEED_PWM = 655;    // legacy-command speed until "speed N" is received
+const int MAX_PWM = 655;              // hard cap on any wheel PWM, every command path
+const int DEFAULT_SPEED_PWM = 650;    // legacy-command speed until "speed N" is received
 
 const unsigned long WATCHDOG_MS = 250;           // stop if no valid command this long
                                                  // (the ROS bridge resends every 100 ms)

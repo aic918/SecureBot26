@@ -240,7 +240,7 @@ static void t_pwm_setup() {
   CHECK(LEFT_PWM_CHANNEL != RIGHT_PWM_CHANNEL);
   CHECK(g_chan_bits[LEFT_PWM_CHANNEL] == 10 && g_chan_bits[RIGHT_PWM_CHANNEL] == 10);
   CHECK(g_chan_freq[LEFT_PWM_CHANNEL] == 10000 && g_chan_freq[RIGHT_PWM_CHANNEL] == 10000);
-  CHECK(MAX_PWM <= 1023 && MAX_PWM == 850);
+  CHECK(MAX_PWM <= 1023 && MAX_PWM == 655 && DEFAULT_SPEED_PWM == 650);
   send("M,655,655\n"); step(5);
   CHECK(g_pwm[LEFT_EN] == 655 && g_pwm[RIGHT_EN] == 655);
 }

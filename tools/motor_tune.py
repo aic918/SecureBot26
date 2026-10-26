@@ -13,7 +13,7 @@ Hold a key to drive; let go and the robot stops (the firmware's watchdog also st
   frequency down / up:  1 / 2  50 Hz   3 / 4  100 Hz   5 / 6  500 Hz   7 / 8  1000 Hz
                         (50..25000 Hz, starts at the firmware's 10000 Hz)
   power down / up (Shift + the same keys):  ! / @  10   # / $  25   % / ^  50   & / *  100
-                        (of 1023, 200..850; + / - also step it by 25)   q quit
+                        (of 1023, 200..655; + / - also step it by 25)   q quit
 Lower frequencies give the L298N more torque and a lower, quieter hum; 10 kHz whines.
 Look for the lowest power that starts the robot from standstill on the floor, at a frequency
 whose sound you can live with, and tell the result to whoever sets the firmware defaults.
@@ -33,7 +33,7 @@ MOVES = {'w': (1, 1), 's': (-1, -1), 'a': (-1, 1), 'd': (1, -1), ' ': (0, 0)}
 # key -> power change (of 1023): Shift + 1..8 on a US keyboard, odd keys down, even keys up
 POWER_STEPS = {'!': -10, '@': 10, '#': -25, '$': 25, '%': -50, '^': 50, '&': -100, '*': 100,
                '-': -25, '_': -25, '+': 25, '=': 25}
-POWER_MIN, POWER_MAX = 200, 850
+POWER_MIN, POWER_MAX = 200, 655     # firmware cap
 SEND_PERIOD = 0.1     # firmware watchdog is 250 ms
 HOLD_TIME = 0.6       # longer than the terminal's key-repeat delay
 
@@ -41,7 +41,7 @@ HOLD_TIME = 0.6       # longer than the terminal's key-repeat delay
 class TuneState:
     """Key handling and the command to send; no serial port, so it can be tested."""
 
-    def __init__(self, power=500, freq=10000):
+    def __init__(self, power=650, freq=10000):
         self.power, self.freq = power, freq
         self.move, self.last_key = (0, 0), None
         self.pending = []                  # one-off commands (frequency changes) to send
@@ -79,7 +79,7 @@ def read_key(timeout):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     parser.add_argument('port', nargs='?', default=ESP32_PORT)
-    parser.add_argument('--power', type=int, default=500, help='starting power (500 of 1023)')
+    parser.add_argument('--power', type=int, default=650, help='starting power (650 of 1023)')
     args = parser.parse_args(argv)
     if not sys.stdin.isatty():
         sys.exit('motor_tune needs a terminal (it reads single key presses).')

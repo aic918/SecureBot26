@@ -70,7 +70,7 @@ class TuneStateTest(unittest.TestCase):
         for _ in range(40):
             s.key('-', 0.0)
         self.assertEqual(s.power, mt.POWER_MIN)
-        self.assertLessEqual(mt.POWER_MAX, 850)            # firmware cap
+        self.assertLessEqual(mt.POWER_MAX, 655)            # firmware cap
 
 
 if __name__ == '__main__':

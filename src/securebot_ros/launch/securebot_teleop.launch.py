@@ -22,7 +22,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 def generate_launch_description():
     arg = LaunchConfiguration
     return LaunchDescription([
-        DeclareLaunchArgument('min_pwm', default_value='500'),     # of 1023 (10-bit duty)
+        DeclareLaunchArgument('min_pwm', default_value='650'),     # of 1023 (10-bit duty)
         Node(package='securebot_ros', executable='motion_manager_node', output='screen',
              parameters=[{'require_security': False, 'idle_action': 'stop'}]),
         Node(package='securebot_base', executable='esp32_serial_bridge', output='screen',

@@ -80,16 +80,17 @@ class ESP32SerialBridge(Node):
         # LiDAR, which uses the same CP2102 adapter with the same serial number.
         self.declare_parameter('port', '/dev/serial/by-path/platform-3610000.usb-usb-0:2.3:1.0-port0')
         self.declare_parameter('baudrate', 115200)
-        # PWM is 10-bit duty (0-1023) since the firmware moved to 10 kHz LEDC PWM; 655 (~64 %)
-        # is the drive level verified with the senior1typetest sketch and the firmware's cap.
-        self.declare_parameter('max_pwm', 655)
-        self.declare_parameter('min_pwm', 0)            # deadband floor for M,l,r (0 = off)
+        # PWM is 10-bit duty (0-1023) at 10 kHz. The robot needs ~650 to start from standstill
+        # (tuned with tools/motor_tune.py), so 650 is both the floor for any wheel that should
+        # turn and the ceiling: for now the robot drives at one speed and steers/stops.
+        self.declare_parameter('max_pwm', 650)
+        self.declare_parameter('min_pwm', 650)          # deadband floor for M,l,r (0 = off)
         self.declare_parameter('max_linear_mps', 0.35)
         self.declare_parameter('max_angular_rps', 1.5)
         # Drive wheels 72 mm wide, 368 mm apart inside edge to inside edge -> 440 mm centre to
         # centre (measured 2026-10-26). Wheel diameter 192 mm (used once encoders give odometry).
         self.declare_parameter('wheel_base_m', 0.44)
-        self.declare_parameter('patrol_speed', 655)     # PWM the firmware's own patrol uses
+        self.declare_parameter('patrol_speed', 650)     # PWM the firmware's own patrol uses
         self.declare_parameter('heartbeat_period', 0.1)     # firmware watchdog is 250 ms
         self.declare_parameter('command_timeout', 0.5)
 
