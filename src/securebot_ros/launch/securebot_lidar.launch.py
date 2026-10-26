@@ -9,7 +9,8 @@ reboots as long as it is plugged into the same socket; /dev/ttyUSBn numbers can 
 the ESP32 (both are CP2102 adapters with the same serial number).
 
 The base_link -> laser transform is a placeholder until the URDF (Sprint 2, S2-3) has the
-measured LiDAR position. laser_yaw turns the laser frame so its +x is the robot's front: the
+measured LiDAR position. robot_state_publisher publishes urdf/securebot.urdf (the case, to
+scale: 495 x 360 mm) on /robot_description so RViz can draw the robot. laser_yaw turns the laser frame so its +x is the robot's front: the
 LiDAR sits right behind the camera tower, and the tower's shadow is at 180 deg in the laser
 frame, so the laser's +x points backwards and the default yaw is pi.
 """
@@ -41,6 +42,14 @@ def generate_launch_description():
         DeclareLaunchArgument('laser_yaw', default_value='3.14159'),
         DeclareLaunchArgument('rviz', default_value='false'),
     ]
+
+    with open(os.path.join(share, 'urdf', 'securebot.urdf')) as f:
+        robot_description = f.read()
+    model = Node(
+        package='robot_state_publisher', executable='robot_state_publisher',
+        name='robot_state_publisher', output='screen',
+        parameters=[{'robot_description': robot_description}],
+    )
 
     lidar = Node(
         package='rplidar_ros', executable='rplidar_node', name='rplidar_node', output='screen',
@@ -80,4 +89,4 @@ def generate_launch_description():
         arguments=['-d', os.path.join(share, 'rviz', 'lidar.rviz')],
     )
 
-    return LaunchDescription(args + [lidar, filters, tf, rviz])
+    return LaunchDescription(args + [lidar, filters, tf, model, rviz])

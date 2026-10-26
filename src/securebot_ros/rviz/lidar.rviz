@@ -1,43 +1,59 @@
 Panels:
-  - Class: rviz_common/Displays
-    Name: Displays
+- Class: rviz_common/Displays
+  Name: Displays
 Visualization Manager:
-  Class: ""
+  Class: ''
   Displays:
-    - Class: rviz_default_plugins/Grid
-      Name: Grid (1 m)
-      Enabled: true
-      Cell Size: 1
-      Plane Cell Count: 12
-      Color: 160; 160; 164
-    - Class: rviz_default_plugins/TF
-      Name: TF
-      Enabled: true
-      Marker Scale: 0.4
-    - Class: rviz_default_plugins/LaserScan
-      Name: Scan (filtered, /scan)
-      Enabled: true
-      Topic:
-        Value: /scan
-        Depth: 5
-        Reliability Policy: Best Effort
-      Color Transformer: FlatColor
-      Color: 0; 200; 120
-      Style: Points
-      Size (Pixels): 4
-      Decay Time: 0
-    - Class: rviz_default_plugins/LaserScan
-      Name: Scan (raw, /scan_raw)
-      Enabled: false
-      Topic:
-        Value: /scan_raw
-        Depth: 5
-        Reliability Policy: Best Effort
-      Color Transformer: FlatColor
-      Color: 255; 140; 0
-      Style: Points
-      Size (Pixels): 3
-      Decay Time: 0
+  - Class: rviz_default_plugins/Grid
+    Name: Grid (1 m)
+    Enabled: true
+    Cell Size: 1
+    Plane Cell Count: 12
+    Color: 160; 160; 164
+  - Class: rviz_default_plugins/RobotModel
+    Name: Robot (to scale)
+    Enabled: true
+    Alpha: 0.8
+    Description Source: Topic
+    Description File: ''
+    Description Topic:
+      Value: /robot_description
+      Depth: 1
+      Durability Policy: Transient Local
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+    Visual Enabled: true
+    Collision Enabled: false
+    TF Prefix: ''
+    Update Interval: 0
+  - Class: rviz_default_plugins/TF
+    Name: TF
+    Enabled: true
+    Marker Scale: 0.4
+  - Class: rviz_default_plugins/LaserScan
+    Name: Scan (filtered, /scan)
+    Enabled: true
+    Topic:
+      Value: /scan
+      Depth: 5
+      Reliability Policy: Best Effort
+    Color Transformer: FlatColor
+    Color: 0; 200; 120
+    Style: Points
+    Size (Pixels): 4
+    Decay Time: 0
+  - Class: rviz_default_plugins/LaserScan
+    Name: Scan (raw, /scan_raw)
+    Enabled: false
+    Topic:
+      Value: /scan_raw
+      Depth: 5
+      Reliability Policy: Best Effort
+    Color Transformer: FlatColor
+    Color: 255; 140; 0
+    Style: Points
+    Size (Pixels): 3
+    Decay Time: 0
   Enabled: true
   Global Options:
     Background Color: 40; 40; 44
@@ -45,7 +61,7 @@ Visualization Manager:
     Frame Rate: 30
   Name: root
   Tools:
-    - Class: rviz_default_plugins/MoveCamera
+  - Class: rviz_default_plugins/MoveCamera
   Value: true
   Views:
     Current:

@@ -1,56 +1,72 @@
 Panels:
-  - Class: rviz_common/Displays
-    Name: Displays
+- Class: rviz_common/Displays
+  Name: Displays
 Visualization Manager:
-  Class: ""
+  Class: ''
   Displays:
-    - Class: rviz_default_plugins/Grid
-      Name: Grid (1 m)
-      Enabled: true
-      Reference Frame: map
-      Cell Size: 1
-      Plane Cell Count: 30
-      Color: 160; 160; 164
-    - Class: rviz_default_plugins/Map
-      Name: Map
-      Enabled: true
-      Topic:
-        Value: /map
-        Durability Policy: Transient Local
-        Reliability Policy: Reliable
-      Color Scheme: map
-      Alpha: 0.8
-    - Class: rviz_default_plugins/LaserScan
-      Name: Scan (/scan)
-      Enabled: true
-      Topic:
-        Value: /scan
-        Depth: 5
-        Reliability Policy: Best Effort
-      Color Transformer: FlatColor
-      Color: 0; 200; 120
-      Style: Points
-      Size (Pixels): 4
-      Decay Time: 0
-    - Class: rviz_default_plugins/Odometry
-      Name: Odometry (/odom)
-      Enabled: true
-      Topic:
-        Value: /odom
-        Depth: 5
-        Reliability Policy: Reliable
-      Keep: 50
-      Shape:
-        Value: Arrow
-        Color: 255; 140; 0
-        Shaft Length: 0.25
-        Shaft Radius: 0.02
-        Head Length: 0.08
-        Head Radius: 0.05
-    - Class: rviz_default_plugins/TF
-      Name: TF
-      Enabled: true
-      Marker Scale: 0.4
+  - Class: rviz_default_plugins/Grid
+    Name: Grid (1 m)
+    Enabled: true
+    Reference Frame: map
+    Cell Size: 1
+    Plane Cell Count: 30
+    Color: 160; 160; 164
+  - Class: rviz_default_plugins/RobotModel
+    Name: Robot (to scale)
+    Enabled: true
+    Alpha: 0.8
+    Description Source: Topic
+    Description File: ''
+    Description Topic:
+      Value: /robot_description
+      Depth: 1
+      Durability Policy: Transient Local
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+    Visual Enabled: true
+    Collision Enabled: false
+    TF Prefix: ''
+    Update Interval: 0
+  - Class: rviz_default_plugins/Map
+    Name: Map
+    Enabled: true
+    Topic:
+      Value: /map
+      Durability Policy: Transient Local
+      Reliability Policy: Reliable
+    Color Scheme: map
+    Alpha: 0.8
+  - Class: rviz_default_plugins/LaserScan
+    Name: Scan (/scan)
+    Enabled: true
+    Topic:
+      Value: /scan
+      Depth: 5
+      Reliability Policy: Best Effort
+    Color Transformer: FlatColor
+    Color: 0; 200; 120
+    Style: Points
+    Size (Pixels): 4
+    Decay Time: 0
+  - Class: rviz_default_plugins/Odometry
+    Name: Odometry (/odom)
+    Enabled: true
+    Topic:
+      Value: /odom
+      Depth: 5
+      Reliability Policy: Reliable
+    Keep: 50
+    Shape:
+      Value: Arrow
+      Color: 255; 140; 0
+      Shaft Length: 0.25
+      Shaft Radius: 0.02
+      Head Length: 0.08
+      Head Radius: 0.05
+  - Class: rviz_default_plugins/TF
+    Name: TF
+    Enabled: true
+    Marker Scale: 0.4
   Enabled: true
   Global Options:
     Background Color: 40; 40; 44
@@ -58,7 +74,7 @@ Visualization Manager:
     Frame Rate: 30
   Name: root
   Tools:
-    - Class: rviz_default_plugins/MoveCamera
+  - Class: rviz_default_plugins/MoveCamera
   Value: true
   Views:
     Current:

@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<!-- SecureBot body, to scale, for RViz. Case: 495 mm long (x) x 360 mm wide (y).
+     base_link is the centre of the case until the drive-wheel axle is measured.
+     The body height (200 mm, starting 30 mm above base_link) is a placeholder.
+     Sensor frames (laser, left/right_ultrasonic) are still published by the launch files'
+     static transforms, not by this file, so they are not defined twice. -->
+<robot name="securebot">
+  <material name="case_grey"><color rgba="0.55 0.57 0.60 0.85"/></material>
+  <material name="front_red"><color rgba="0.90 0.15 0.15 1.0"/></material>
+
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0.13" rpy="0 0 0"/>
+      <geometry><box size="0.495 0.360 0.200"/></geometry>
+      <material name="case_grey"/>
+    </visual>
+    <!-- red strip along the front edge, so the robot's heading is obvious from above -->
+    <visual>
+      <origin xyz="0.2375 0 0.235" rpy="0 0 0"/>
+      <geometry><box size="0.020 0.360 0.010"/></geometry>
+      <material name="front_red"/>
+    </visual>
+  </link>
+</robot>

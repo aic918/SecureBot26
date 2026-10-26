@@ -21,7 +21,7 @@ def ultrasonic_tf(side, sign):
 
 def generate_launch_description():
     return LaunchDescription([
-        DeclareLaunchArgument('us_x', default_value='0.12'),
+        DeclareLaunchArgument('us_x', default_value='0.24'),     # front edge of the 495 mm case
         DeclareLaunchArgument('us_y', default_value='0.06'),
         DeclareLaunchArgument('us_z', default_value='0.10'),
         DeclareLaunchArgument('us_yaw', default_value='0.0',
