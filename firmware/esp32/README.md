@@ -5,9 +5,10 @@ framework): L298N-style motor driver and two HC-SR04 ultrasonics. The original
 v1 firmware is preserved in git history (commit "S0-4").
 
 ## What changed from v1
-- **Motor PWM:** 10-bit duty (0-1023) at 10 kHz on LEDC channels, as in the senior1typetest
-  sketch. **PWM cap** (`MAX_PWM = 655`, ~64 %) enforced in one output function; applies to
-  every command.
+- **Motor PWM:** 10-bit duty (0-1023) on LEDC channels, 10 kHz at boot; `freq <Hz>` changes it
+  until reboot (for tuning with `tools/motor_tune.py`). **PWM cap** (`MAX_PWM = 850`, ~83 %)
+  enforced in one output function; applies to every command. The ROS bridge's own `max_pwm`
+  (655) limits normal driving.
 - **Watchdog:** no valid command for 250 ms -> motors stop. The sender must resend (the ROS
   bridge does every 100 ms).
 - **Non-blocking serial** line parser (v1 `readStringUntil` could block up to 1 s). Bad lines are
@@ -23,9 +24,10 @@ v1 firmware is preserved in git history (commit "S0-4").
 ## Serial protocol (115200 baud, newline-terminated)
 | Direction | Message | Meaning |
 |---|---|---|
-| to ESP32 | `M,<l>,<r>` | wheel PWM (10-bit duty), -655..655 |
+| to ESP32 | `M,<l>,<r>` | wheel PWM (10-bit duty), -850..850 |
 | to ESP32 | `stop` `forward` `patrol` `backward` `left` `right` | legacy modes |
-| to ESP32 | `speed <n>` | legacy-mode PWM, clamped 0..655 (default 655) |
+| to ESP32 | `speed <n>` | legacy-mode PWM, clamped 0..850 (default 655) |
+| to ESP32 | `freq <hz>` | motor PWM frequency, 50..25000 Hz, until reboot (not a heartbeat) |
 | from ESP32 | `U,<left_ft>,<right_ft>` | distances in feet, `-1` = none |
 | from ESP32 | `S,<mode>,<l>,<r>,<avoidState>` | status, 2 Hz |
 | from ESP32 | `I,<text>` / `E,<text>` | info / safety event |

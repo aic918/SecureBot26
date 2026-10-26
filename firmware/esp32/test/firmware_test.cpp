@@ -24,6 +24,7 @@ static double g_chan_freq[16];
 double ledcSetup(int ch, double f, int bits) { g_chan_freq[ch] = f; g_chan_bits[ch] = bits; return f; }
 void ledcAttachPin(int pin, int ch) { g_chan_pin[ch] = pin; }
 void ledcWrite(int ch, int duty) { g_pwm[g_chan_pin[ch]] = duty; }  // recorded by EN pin
+uint32_t ledcChangeFrequency(int ch, uint32_t f, int bits) { g_chan_freq[ch] = f; g_chan_bits[ch] = bits; return f; }
 SerialClass Serial;
 int SerialClass::available() { return (int)(g_in.size() - g_in_pos); }
 int SerialClass::read() { return g_in_pos < g_in.size() ? (unsigned char)g_in[g_in_pos++] : -1; }
@@ -239,15 +240,30 @@ static void t_pwm_setup() {
   CHECK(LEFT_PWM_CHANNEL != RIGHT_PWM_CHANNEL);
   CHECK(g_chan_bits[LEFT_PWM_CHANNEL] == 10 && g_chan_bits[RIGHT_PWM_CHANNEL] == 10);
   CHECK(g_chan_freq[LEFT_PWM_CHANNEL] == 10000 && g_chan_freq[RIGHT_PWM_CHANNEL] == 10000);
-  CHECK(MAX_PWM <= 1023 && MAX_PWM == 655);
+  CHECK(MAX_PWM <= 1023 && MAX_PWM == 850);
   send("M,655,655\n"); step(5);
   CHECK(g_pwm[LEFT_EN] == 655 && g_pwm[RIGHT_EN] == 655);
+}
+
+static void t_freq_command() {
+  boot();
+  send("freq 1000\n"); step(5);
+  CHECK(g_chan_freq[LEFT_PWM_CHANNEL] == 1000 && g_chan_freq[RIGHT_PWM_CHANNEL] == 1000);
+  CHECK(g_chan_bits[LEFT_PWM_CHANNEL] == 10 && pwmFrequencyHz == 1000 && outHas("I,freq 1000"));
+  send("freq 999999\n"); step(5);                 // clamped
+  CHECK(pwmFrequencyHz == MAX_PWM_FREQ_HZ);
+  send("freq 1\n"); step(5);
+  CHECK(pwmFrequencyHz == MIN_PWM_FREQ_HZ);
+  // freq is not a heartbeat: a driving robot still stops when motion commands stop
+  send("M,300,300\n"); step(100);
+  for (int i = 0; i < 4; i++) { send("freq 500\n"); step(100); }
+  CHECK(leftPWM() == 0 && rightPWM() == 0 && outHas("E,watchdog"));
 }
 
 struct T { const char *name; void (*fn)(); };
 int main(int argc, char **argv) {
   T tests[] = {
-    {"boot", t_boot}, {"pinout", t_pinout}, {"polarity", t_polarity}, {"pwm_setup", t_pwm_setup}, {"drive_and_clamp", t_drive_and_clamp}, {"speed_cap", t_speed_cap}, {"output_stage_cap", t_output_stage_cap},
+    {"boot", t_boot}, {"pinout", t_pinout}, {"polarity", t_polarity}, {"pwm_setup", t_pwm_setup}, {"freq_command", t_freq_command}, {"drive_and_clamp", t_drive_and_clamp}, {"speed_cap", t_speed_cap}, {"output_stage_cap", t_output_stage_cap},
     {"watchdog", t_watchdog}, {"heartbeat_keeps_running", t_heartbeat_keeps_running},
     {"partial_line", t_partial_line}, {"bad_input", t_bad_input},
     {"bad_command_not_heartbeat", t_bad_command_not_heartbeat},

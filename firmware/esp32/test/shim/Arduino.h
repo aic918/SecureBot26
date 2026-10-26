@@ -25,6 +25,7 @@ void analogWrite(int pin, int value);
 double ledcSetup(int channel, double freq, int resolution_bits);
 void ledcAttachPin(int pin, int channel);
 void ledcWrite(int channel, int duty);
+uint32_t ledcChangeFrequency(int channel, uint32_t freq, int resolution_bits);
 
 struct SerialClass {
   void begin(long) {}

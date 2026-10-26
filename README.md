@@ -131,6 +131,12 @@ on `base_link` (the case centre until the axle position is measured); RViz draws
 wheels to scale from `urdf/securebot.urdf`. Sensor positions are still placeholders. First runs: wheels off
 the ground.
 
+## Motor tuning (PWM frequency and power)
+`python3 tools/motor_tune.py` drives the ESP32 directly (stop the bridge first): hold w/s/a/d,
+number keys 1-8 pick 100 Hz..20 kHz, +/- change power. Find the lowest power that starts the
+robot from standstill at a frequency that does not whine. Tests:
+`python3 -m unittest tools.test_motor_tune`.
+
 ## Serial ownership and the motion chain
 Only `esp32_serial_bridge` opens the ESP32 port. `securebot_live.launch.py` starts the chain:
 ```

@@ -6,6 +6,8 @@
 //   M,<left>,<right>   signed wheel PWM, 10-bit duty (0-1023), clamped to +/-MAX_PWM
 //   stop | forward | patrol | backward | left | right   (legacy text commands)
 //   speed <0-MAX_PWM>  PWM used by the legacy commands
+//   freq <Hz>          motor PWM frequency, MIN_PWM_FREQ_HZ..MAX_PWM_FREQ_HZ, until reboot
+//                      (for tuning; not a heartbeat)
 //
 // ESP32 -> Jetson
 //   U,<left_ft>,<right_ft>   every TELEMETRY_MS; -1 means "no reading"
@@ -55,13 +57,18 @@ const int LEFT_ENCODER_WHITE = 35;
 #define ULTRA_RIGHT_ECHO 17
 
 // ==================== SETTINGS ====================
-// Motor PWM: 10-bit duty (0-1023) at 10 kHz, as in the senior1typetest sketch, where 655
-// (~64 %) drove the robot well. The 8-bit analogWrite used before was too weak at low duty.
+// Motor PWM: 10-bit duty (0-1023), as in the senior1typetest sketch, where 655 (~64 %) drove
+// the robot. The frequency can be changed at run time with `freq <Hz>` while tuning: the L298N
+// loses torque at high frequencies and 10 kHz whines audibly.
 const int PWM_FREQUENCY_HZ = 10000;
+const int MIN_PWM_FREQ_HZ = 50;
+const int MAX_PWM_FREQ_HZ = 25000;
 const int PWM_BITS = 10;
 const int LEFT_PWM_CHANNEL = 1;       // LEDC channels (Arduino-ESP32 2.x API)
 const int RIGHT_PWM_CHANNEL = 0;
-const int MAX_PWM = 655;              // hard cap on any wheel PWM, every command path
+// Hard cap on any wheel PWM, every command path. Headroom above 655 for tuning; the ROS
+// bridge applies its own, lower max_pwm in normal driving.
+const int MAX_PWM = 850;
 const int DEFAULT_SPEED_PWM = 655;    // legacy-command speed until "speed N" is received
 
 const unsigned long WATCHDOG_MS = 250;           // stop if no valid command this long
@@ -84,6 +91,7 @@ const char *MODE_NAMES[] = {"stop", "forward", "patrol", "backward", "left", "ri
 // ==================== STATE ====================
 Mode mode = MODE_STOP;
 int speedPWM = DEFAULT_SPEED_PWM;
+int pwmFrequencyHz = PWM_FREQUENCY_HZ;
 int driveLeft = 0;                 // requested by M,l,r
 int driveRight = 0;
 int appliedLeft = 0;               // what is actually on the motors
@@ -196,6 +204,7 @@ void handleCommand(char *cmd) {
   }
 
   bool valid = true;
+  bool heartbeat = true;          // configuration commands are valid but do not feed the watchdog
 
   if (strcmp(cmd, "stop") == 0) {
     setMode(MODE_STOP);
@@ -213,6 +222,17 @@ void handleCommand(char *cmd) {
     speedPWM = constrain(atoi(cmd + 6), 0, MAX_PWM);
     Serial.print("I,speed ");
     Serial.println(speedPWM);
+  } else if (strncmp(cmd, "freq ", 5) == 0) {
+    int hz = constrain(atoi(cmd + 5), MIN_PWM_FREQ_HZ, MAX_PWM_FREQ_HZ);
+    if (ledcChangeFrequency(LEFT_PWM_CHANNEL, hz, PWM_BITS) != 0 &&
+        ledcChangeFrequency(RIGHT_PWM_CHANNEL, hz, PWM_BITS) != 0) {
+      pwmFrequencyHz = hz;
+      Serial.print("I,freq ");
+      Serial.println(pwmFrequencyHz);
+    } else {
+      Serial.println("E,freq not supported");
+    }
+    heartbeat = false;
   } else if (strncmp(cmd, "M,", 2) == 0) {
     int l = 0;
     int r = 0;
@@ -228,7 +248,9 @@ void handleCommand(char *cmd) {
   }
 
   if (valid) {
-    lastCommandMs = millis();   // any valid command counts as a heartbeat
+    if (heartbeat) {
+      lastCommandMs = millis();   // any valid motion/speed command counts as a heartbeat
+    }
   } else {
     Serial.print("E,bad command: ");
     Serial.println(cmd);
