@@ -10,7 +10,8 @@ Talks to the ESP32 directly (no ROS). Stop everything else that uses the ESP32 p
 Hold a key to drive; let go and the robot stops (the firmware's watchdog also stops it within
 250 ms if this program dies).
   w forward   s backward   a spin left   d spin right   space stop
-  1-8 frequency: 1=100 Hz 2=200 3=500 4=1000 5=2000 6=5000 7=10000 8=20000
+  frequency down / up:  1 / 2  50 Hz   3 / 4  100 Hz   5 / 6  500 Hz   7 / 8  1000 Hz
+                        (50..25000 Hz, starts at the firmware's 10000 Hz)
   + / -  power up / down in steps of 25 (of 1023, 200..850)        q quit
 Lower frequencies give the L298N more torque and a lower, quieter hum; 10 kHz whines.
 Look for the lowest power that starts the robot from standstill on the floor, at a frequency
@@ -24,7 +25,9 @@ import time
 import tty
 
 ESP32_PORT = '/dev/serial/by-path/platform-3610000.usb-usb-0:2.3:1.0-port0'
-FREQS = {'1': 100, '2': 200, '3': 500, '4': 1000, '5': 2000, '6': 5000, '7': 10000, '8': 20000}
+# key -> frequency change in Hz (odd keys down, even keys up)
+FREQ_STEPS = {'1': -50, '2': 50, '3': -100, '4': 100, '5': -500, '6': 500, '7': -1000, '8': 1000}
+FREQ_MIN, FREQ_MAX = 50, 25000      # the firmware's limits
 MOVES = {'w': (1, 1), 's': (-1, -1), 'a': (-1, 1), 'd': (1, -1), ' ': (0, 0)}
 POWER_MIN, POWER_MAX, POWER_STEP = 200, 850, 25
 SEND_PERIOD = 0.1     # firmware watchdog is 250 ms
@@ -46,9 +49,11 @@ class TuneState:
             return False
         if ch in MOVES:
             self.move, self.last_key = MOVES[ch], now
-        elif ch in FREQS:
-            self.freq = FREQS[ch]
-            self.pending.append(f'freq {self.freq}')
+        elif ch in FREQ_STEPS:
+            freq = max(FREQ_MIN, min(FREQ_MAX, self.freq + FREQ_STEPS[ch]))
+            if freq != self.freq:
+                self.freq = freq
+                self.pending.append(f'freq {self.freq}')
         elif ch in ('+', '='):
             self.power = min(POWER_MAX, self.power + POWER_STEP)
         elif ch in ('-', '_'):

@@ -132,9 +132,9 @@ wheels to scale from `urdf/securebot.urdf`. Sensor positions are still placehold
 the ground.
 
 ## Motor tuning (PWM frequency and power)
-`python3 tools/motor_tune.py` drives the ESP32 directly (stop the bridge first): hold w/s/a/d,
-number keys 1-8 pick 100 Hz..20 kHz, +/- change power. Find the lowest power that starts the
-robot from standstill at a frequency that does not whine. Tests:
+`python3 tools/motor_tune.py` drives the ESP32 directly (stop the bridge first): hold w/s/a/d;
+keys 1/2, 3/4, 5/6, 7/8 step the frequency down/up by 50, 100, 500, 1000 Hz; +/- change power.
+Find the lowest power that starts the robot from standstill at a frequency that does not whine. Tests:
 `python3 -m unittest tools.test_motor_tune`.
 
 ## Serial ownership and the motion chain

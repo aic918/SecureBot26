@@ -33,12 +33,25 @@ class TuneStateTest(unittest.TestCase):
         self.assertEqual(s.command(0.2), 'stop')
         self.assertFalse(s.key('q', 0.3))
 
-    def test_frequency_keys_queue_a_freq_command(self):
-        s = mt.TuneState()
-        s.key('4', 0.0)
-        self.assertEqual((s.freq, s.pending), (1000, ['freq 1000']))
-        s.key('1', 0.0)
-        self.assertEqual(s.pending[-1], 'freq 100')
+    def test_frequency_step_keys(self):
+        s = mt.TuneState(freq=10000)
+        steps = {'1': 9950, '2': 10000, '3': 9900, '4': 10000, '5': 9500, '6': 10000,
+                 '7': 9000, '8': 10000}
+        for key, expected in steps.items():
+            s.key(key, 0.0)
+            self.assertEqual(s.freq, expected, key)
+            self.assertEqual(s.pending[-1], f'freq {expected}')
+
+    def test_frequency_stays_in_firmware_range(self):
+        s = mt.TuneState(freq=100)
+        s.key('7', 0.0)                                    # -1000 from 100
+        self.assertEqual(s.freq, mt.FREQ_MIN)
+        n = len(s.pending)
+        s.key('1', 0.0)                                    # already at the minimum
+        self.assertEqual((s.freq, len(s.pending)), (mt.FREQ_MIN, n))   # nothing new sent
+        s = mt.TuneState(freq=24800)
+        s.key('6', 0.0)
+        self.assertEqual(s.freq, mt.FREQ_MAX)
 
     def test_power_limits(self):
         s = mt.TuneState(power=500)
