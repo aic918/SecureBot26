@@ -113,6 +113,20 @@ ros2 run securebot_ros teleop_keyboard                 # w/s/a/d, q/e curves, sp
 Starts at 0.15 m/s and 0.6 rad/s (`+`/`-` change it, capped at 0.25 m/s and 1.0 rad/s).
 `min_pwm:=70` lifts slow commands to a PWM that turns the wheels; raise it if they only hum.
 
+## Navigation (Nav2)
+AMCL localizes on a saved map (starting pose = where mapping started, or RViz "2D Pose
+Estimate"); Regulated Pure Pursuit drives at up to 0.2 m/s; the local costmap uses the LiDAR
+and both ultrasonics (they cover the tower's blind wedge ahead); a collision monitor (stop zone
+15-35 cm ahead, slowdown to 60 cm, fed by LiDAR + ultrasonics) is the last check before the
+robot. Nav2's commands end on `/nav_cmd_vel`, so the security gate still decides.
+```bash
+ros2 launch securebot_ros securebot_live.launch.py idle_action:=stop     # robot side
+ros2 launch securebot_ros securebot_nav.launch.py map:=$HOME/securebot_ws/maps/<name>.yaml
+```
+Then "Nav2 Goal" in RViz. `idle_action:=stop` makes the robot stop when Nav2 has no goal
+instead of starting the firmware patrol. The footprint (30 x 26 cm) and sensor positions are
+placeholders until the robot is measured. First runs: wheels off the ground.
+
 ## Serial ownership and the motion chain
 Only `esp32_serial_bridge` opens the ESP32 port. `securebot_live.launch.py` starts the chain:
 ```
