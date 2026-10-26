@@ -14,6 +14,7 @@ It also starts the motion chain, so only one program ever opens the ESP32 port:
 
 enable_motors:=false runs vision only (no bridge, nothing opens the ESP32 port).
 motor_speed sets the firmware's patrol PWM; esp32_port overrides the ESP32's USB socket path.
+idle_action:=stop (for Nav2) stops the robot when no /nav_cmd_vel arrives instead of patrolling.
 Any parameter left empty keeps the node's own default.
 """
 import glob
@@ -66,7 +67,8 @@ def _start_node(context):
             bridge_params[param] = int(value) if param == 'patrol_speed' else value
     return [
         vision,
-        Node(package='securebot_ros', executable='motion_manager_node', output='screen'),
+        Node(package='securebot_ros', executable='motion_manager_node', output='screen',
+             parameters=[{'idle_action': LaunchConfiguration('idle_action').perform(context)}]),
         Node(package='securebot_base', executable='esp32_serial_bridge', output='screen',
              parameters=[bridge_params]),
     ]
@@ -78,4 +80,6 @@ def generate_launch_description():
     args += [DeclareLaunchArgument(name, default_value='') for name in NODE_PARAMS]
     args += [DeclareLaunchArgument(name, default_value='') for name in BRIDGE_PARAMS]
     args += [DeclareLaunchArgument('enable_motors', default_value='true')]
+    args += [DeclareLaunchArgument('idle_action', default_value='patrol',
+                                   description='patrol | stop (use stop with Nav2)')]
     return LaunchDescription(args + [OpaqueFunction(function=_start_node)])
