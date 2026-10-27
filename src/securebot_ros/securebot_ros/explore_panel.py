@@ -15,8 +15,8 @@ from rclpy.node import Node
 from std_msgs.msg import String
 
 STATE_TEXT = {
-    'idle': 'Stopped', 'survey': 'Looking around', 'plan': 'Choosing a direction',
-    'turn': 'Turning', 'drive': 'Driving', 'pause': 'Pausing', 'blocked_wait': 'Blocked',
+    'idle': 'Stopped', 'turn': 'Turning to open space', 'drive': 'Exploring',
+    'blocked_wait': 'Blocked',
     'backup': 'Backing up', 'done': 'Done', 'error': 'Stopped (problem)',
 }
 STATE_COLOR = {'done': '#1a7f37', 'error': '#cf222e', 'blocked_wait': '#bc4c00',
@@ -83,7 +83,7 @@ def main(args=None):
                 bar['value'] = 0
             else:
                 coverage_label.config(text=f'Room scanned: {cov:.0%} (goal {goal:.0%}), '
-                                           f'legs driven: {s.get("legs", 0)}')
+                                           f'driven {s.get("distance", 0):.1f} m')
                 bar['value'] = cov * 100
         root.after(250, refresh)
 

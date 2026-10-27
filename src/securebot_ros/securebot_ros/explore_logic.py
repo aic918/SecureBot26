@@ -194,25 +194,33 @@ def angle_diff(a, b):
     return math.atan2(math.sin(a - b), math.cos(a - b))
 
 
-def choose_heading(grid, x, y, yaw, half_width, visits, blocked=(), *, step_deg=15,
-                   min_leg=0.5, max_leg=1.5, look=3.0, blocked_width=math.radians(40)):
-    """Pick where to drive next. For each candidate heading, how far is known-free, does that
-    run end at unexplored space, has the robot been there, how far must it turn. Headings near
-    a recently blocked one are skipped. Returns (heading, leg_length) or None."""
-    best, best_score = None, -math.inf
-    for i in range(int(360 / step_deg)):
-        h = math.radians(i * step_deg)
-        if any(abs(angle_diff(h, b)) < blocked_width for b in blocked):
-            continue
-        dist, ends_in = free_distance(grid, x, y, h, half_width, look)
-        if dist < min_leg:
-            continue
-        leg = min(dist, max_leg)
-        visited = visits.along(x, y, h, leg, half_width)
-        score = (min(dist, look)
-                 + (2.0 if ends_in == 'unknown' else 0.0)
-                 - 0.8 * min(visited, 5)
-                 - 0.3 * abs(angle_diff(h, yaw)))
-        if score > best_score:
-            best, best_score = (h, leg), score
-    return best
+def ray(grid, x, y, heading, half_width, max_dist, start=0.25, step=None):
+    """Like free_distance, but looks through unexplored cells: the robot may drive into space
+    the map has not seen yet (the ultrasonics and LiDAR guard it there). Returns
+    (distance to the first occupied cell, or max_dist; distance to the first unknown cell, or
+    None), both from the robot's centre."""
+    step = step or grid.res / 2.0
+    ch, sh = math.cos(heading), math.sin(heading)
+    offsets = (-half_width, 0.0, half_width)
+    first_unknown, d = None, start
+    while d <= max_dist:
+        for o in offsets:
+            st = grid.state(x + ch * d - sh * o, y + sh * d + ch * o)
+            if st == 'occupied':
+                return max(0.0, d - step), first_unknown
+            if st == 'unknown' and first_unknown is None:
+                first_unknown = d
+        d += step
+    return max_dist, first_unknown
+
+
+def scan_clearance(points, heading, half_width):
+    """Distance from the robot's centre along `heading` (robot frame, rad) to the nearest LiDAR
+    point inside the robot's width; inf if none. points: (N, 2) array in base_link."""
+    if len(points) == 0:
+        return math.inf
+    c, s = math.cos(heading), math.sin(heading)
+    u = points[:, 0] * c + points[:, 1] * s
+    v = -points[:, 0] * s + points[:, 1] * c
+    ahead = (u > 0.0) & (np.abs(v) <= half_width)
+    return float(u[ahead].min()) if ahead.any() else math.inf

@@ -82,35 +82,23 @@ def test_free_distance_respects_robot_width():
     assert ends != 'max' and d < 0.5
 
 
-def test_choose_heading_prefers_unexplored_space():
-    g = room(w=4.0, h=4.0, unknown_box=(0.0, 3.0, 4.0, 4.0))   # top quarter unseen
-    pick = ex.choose_heading(g, 2.0, 1.0, 0.0, HW, ex.VisitMap())
-    assert pick is not None
-    heading, leg = pick
-    _, ends_in = ex.free_distance(g, 2.0, 1.0, heading, HW, 3.0)
-    assert ends_in == 'unknown'                      # the run leads into the unseen part
-    assert math.sin(heading) > 0.5                   # i.e. towards +y
-    assert 0.5 <= leg <= 1.5
+def test_ray_looks_through_unknown_to_the_wall():
+    g = room(w=4.0, h=3.0, unknown_box=(2.5, 0.8, 3.5, 2.2))
+    occupied, unknown = ex.ray(g, 1.0, 1.5, 0.0, HW, 5.0)
+    assert 2.8 < occupied < 3.05                    # wall at x = 4.0, behind the unseen patch
+    assert 1.4 < unknown < 1.6                      # patch starts at x = 2.5
+    occupied, unknown = ex.ray(room(), 1.0, 1.5, 0.0, HW, 1.0)
+    assert occupied == 1.0 and unknown is None      # nothing within 1 m
 
 
-def test_choose_heading_skips_blocked_direction():
-    g = room(w=4.0, h=4.0, unknown_box=(0.0, 3.0, 4.0, 4.0))
-    heading, _ = ex.choose_heading(g, 2.0, 1.0, 0.0, HW, ex.VisitMap(), blocked=[math.pi / 2])
-    assert abs(ex.angle_diff(heading, math.pi / 2)) >= math.radians(40)
-
-
-def test_choose_heading_avoids_visited_places():
-    g = room(w=6.0, h=2.0)
-    visits = ex.VisitMap()
-    for _ in range(10):
-        visits.add(4.0, 1.0)                         # been to the right many times
-    heading, _ = ex.choose_heading(g, 3.0, 1.0, 0.0, HW, visits)
-    assert abs(ex.angle_diff(heading, math.pi)) < math.radians(60)   # goes left instead
-
-
-def test_choose_heading_none_when_boxed_in():
-    g = room(w=0.9, h=0.9)
-    assert ex.choose_heading(g, 0.45, 0.45, 0.0, HW, ex.VisitMap()) is None
+def test_scan_clearance_within_the_robot_width():
+    pts = np.array([[1.0, 0.1], [0.5, 0.6], [-0.8, 0.0]])
+    assert ex.scan_clearance(pts, 0.0, HW) == 1.0               # ahead
+    assert ex.scan_clearance(pts, math.pi, HW) == 0.8           # behind
+    left = ex.scan_clearance(pts, math.atan2(0.6, 0.5), HW)
+    assert abs(left - math.hypot(0.5, 0.6)) < 1e-9
+    assert ex.scan_clearance(pts, math.pi / 2, HW) == math.inf  # (0.5, 0.6) is too far aside
+    assert ex.scan_clearance(np.zeros((0, 2)), 0.0, HW) == math.inf
 
 
 def test_rotation_clear():

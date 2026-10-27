@@ -136,15 +136,17 @@ the ground.
 ros2 launch securebot_ros securebot_explore.launch.py
 ```
 Starts mapping (with RViz), the robot side in keyboard mode (no camera needed), the explore node
-and a "SecureBot Explore" window with **START** / **STOP**. On Start the robot turns a full
-circle in short bursts (so the LiDAR sees past the tower), then repeatedly picks a direction
-that the map shows as free and that leads towards unexplored space (preferring places it has
-not been), turns to it, drives a leg of up to 1.5 m and pauses so the map catches up. An
-ultrasonic reading of 1 ft or less, or a LiDAR point too close, stops it; it backs up and
-picks another direction. It stops by itself when the room is at least 90 % scanned: the
-share of the explored area's edge that is wall rather than unexplored space
-(`coverage_goal:=0.9`). It also stops if the robot does not turn or move when commanded, or
-if the map pose or an ultrasonic goes silent. Unexplored edges (orange) and the chosen heading
+and a "SecureBot Explore" window with **START** / **STOP**. On Start the robot drives in one
+continuous path: every 0.1 s it scores the directions ahead by how far it can go (LiDAR points,
+walls in the map, and straight ahead, where the LiDAR is blind behind the tower, the
+ultrasonics), preferring unexplored space, places it has not driven and keeping off walls,
+and steers towards the best one while moving. An ultrasonic reading of 1 ft or less, or a
+LiDAR point within 1 ft ahead, stops it; it backs up, turns on the spot towards the most open
+direction (not the one it was blocked in) and drives on. It stops by itself when the room is
+at least 90 % scanned: the share of the explored area's edge that is wall rather than
+unexplored space (`coverage_goal:=0.9`, checked every 2 s once it has driven 1 m). It also
+stops if the robot does not move or turn when commanded, has nowhere to go, or if the map
+pose or an ultrasonic goes silent. Unexplored edges (orange) and the steering direction
 (cyan arrow) show in RViz. Save the map afterwards with `map_saver_cli` (see Mapping).
 
 ## Motor tuning (PWM frequency and power)

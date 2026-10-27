@@ -3,8 +3,8 @@
 Inputs   /map (slam_toolbox), TF map -> base_link, /ultrasonic/left, /ultrasonic/right, /scan,
          /explore/command  std_msgs/String  start | stop     (the Start / Stop buttons)
 Outputs  /nav_cmd_vel  geometry_msgs/Twist  only while exploring (motion_manager_node gates it)
-         /explore/status  std_msgs/String  JSON {state, message, coverage}, 2 Hz
-         /explore/markers  visualization_msgs/MarkerArray  frontiers + chosen heading, for RViz
+         /explore/status  std_msgs/String  JSON {state, message, coverage, distance}, 2 Hz
+         /explore/markers  visualization_msgs/MarkerArray  frontiers + steering direction, 2 Hz
 
 Run it with securebot_explore.launch.py (SLAM + robot side in keyboard mode + this + buttons).
 """
@@ -125,8 +125,6 @@ class ExploreNode(Node):
         self.was_running = self.machine.running
         if self.machine.state != state_before:
             self.get_logger().info(f'Explore: {self.machine.state} - {self.machine.message}')
-            if self.machine.state == 'plan' or state_before == 'plan':
-                self.publish_markers()
 
     # ---------------------------------------------------------------- outputs
     def publish_status(self):
@@ -134,7 +132,9 @@ class ExploreNode(Node):
         self.status_pub.publish(String(data=json.dumps({
             'state': m.state, 'message': m.message,
             'coverage': None if m.coverage is None else round(m.coverage, 3),
-            'goal': m.p.coverage_goal, 'legs': m.legs})))
+            'goal': m.p.coverage_goal, 'distance': round(m.travelled, 1),
+            'avoids': m.avoids})))
+        self.publish_markers()
 
     def publish_markers(self):
         stamp = self.get_clock().now().to_msg()
@@ -151,7 +151,7 @@ class ExploreNode(Node):
         arrow.ns, arrow.id, arrow.type = 'heading', 0, Marker.ARROW
         if pose and self.machine.target is not None and self.machine.running:
             x, y, _ = pose
-            h, leg = self.machine.target, getattr(self.machine, 'leg', 1.0)
+            h, leg = self.machine.target, self.machine.leg
             arrow.points = [Point(x=x, y=y, z=0.1),
                             Point(x=x + math.cos(h) * leg, y=y + math.sin(h) * leg, z=0.1)]
             arrow.scale.x, arrow.scale.y, arrow.scale.z = 0.05, 0.12, 0.12
