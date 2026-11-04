@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The only program that talks to the ESP32 (firmware 2.0 protocol, see firmware/esp32/).
+"""The only program that talks to the ESP32 (firmware 2.1 protocol, see firmware/esp32/).
 
 Inputs
   /esp32/mode  std_msgs/String  stop | patrol | drive   (published by motion_manager_node)
@@ -7,18 +7,26 @@ Inputs
 Outputs
   /ultrasonic/left, /ultrasonic/right  sensor_msgs/Range  (no echo -> +inf, REP-117)
   /esp32/status  std_msgs/String  the firmware's `S,<mode>,<l>,<r>,<avoid>` line, without "S,"
+  /imu           sensor_msgs/Imu  heading from the MPU-6050 gyro (`G,<yaw_deg>,<rate_dps>`):
+                 yaw (integrated since the ESP32 started, so it drifts slowly) and yaw rate,
+                 in base_link; imu_yaw_sign:=-1.0 if the board is mounted upside down
 
 Safety: the current command is resent every `heartbeat_period` (the firmware stops on its own
 after 250 ms without one). A mode or /cmd_vel older than `command_timeout` counts as "stop",
 so if the motion manager or the planner dies, the robot stops.
+
+The ESP32 is restarted (EN pulsed through the USB adapter, boot pin at "run") when the bridge
+starts and whenever it has sent nothing for `silence_reset` seconds: once it was found running
+but silent, and opening the port does not reliably restart it.
 """
+import math
 import threading
 import time
 
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
-from sensor_msgs.msg import Range
+from sensor_msgs.msg import Imu, Range
 from std_msgs.msg import String
 import serial
 
@@ -60,16 +68,30 @@ def choose_command(mode, mode_age, cmd, cmd_age, timeout, pwm_args):
 
 
 def parse_line(line):
-    """('U', left_ft, right_ft) | ('S', 'drive,90,90,0') | ('I'/'E', text) | None."""
+    """('U', left_ft, right_ft) | ('G', yaw_deg, rate_dps) | ('S', 'drive,90,90,0') |
+    ('I'/'E', text) | None."""
     parts = line.split(',')
-    if parts[0] == 'U' and len(parts) == 3:
+    if parts[0] in ('U', 'G') and len(parts) == 3:
         try:
-            return 'U', float(parts[1]), float(parts[2])
+            return parts[0], float(parts[1]), float(parts[2])
         except ValueError:
             return None
     if parts[0] in ('S', 'I', 'E') and len(parts) > 1:
         return parts[0], line[2:]
     return None
+
+
+def imu_message(yaw, rate):
+    """sensor_msgs/Imu in base_link with only the heading filled in: yaw (rad) as orientation,
+    yaw rate (rad/s); roll, pitch and acceleration are unknown (huge / -1 covariance)."""
+    msg = Imu()
+    msg.header.frame_id = 'base_link'
+    msg.orientation.z, msg.orientation.w = math.sin(yaw / 2.0), math.cos(yaw / 2.0)
+    msg.orientation_covariance = [1e6, 0.0, 0.0, 0.0, 1e6, 0.0, 0.0, 0.0, 0.01]
+    msg.angular_velocity.z = rate
+    msg.angular_velocity_covariance = [1e6, 0.0, 0.0, 0.0, 1e6, 0.0, 0.0, 0.0, 1e-4]
+    msg.linear_acceleration_covariance[0] = -1.0
+    return msg
 
 
 class ESP32SerialBridge(Node):
@@ -93,6 +115,8 @@ class ESP32SerialBridge(Node):
         self.declare_parameter('patrol_speed', 650)     # PWM the firmware's own patrol uses
         self.declare_parameter('heartbeat_period', 0.1)     # firmware watchdog is 250 ms
         self.declare_parameter('command_timeout', 0.5)
+        self.declare_parameter('silence_reset', 3.0)    # s without a line -> restart the ESP32
+        self.declare_parameter('imu_yaw_sign', 1.0)     # -1.0: IMU board mounted upside down
 
         p = lambda name: self.get_parameter(name).value  # noqa: E731
         self.port = p('port')
@@ -100,11 +124,18 @@ class ESP32SerialBridge(Node):
                          float(p('wheel_base_m')), int(p('max_pwm')), int(p('min_pwm')))
         self.patrol_speed = int(p('patrol_speed'))
         self.timeout = float(p('command_timeout'))
+        self.silence_reset = float(p('silence_reset'))
+        self.imu_sign = float(p('imu_yaw_sign'))
 
         self.serial_port = serial.Serial(self.port, int(p('baudrate')), timeout=0.05)
-        self.drain_startup_backlog()
-        self.write_line('stop')
-        self.write_line(f'speed {self.patrol_speed}')
+        if self.restart_esp32(wait=True):
+            self.get_logger().info('ESP32 restarted and ready')
+        else:
+            self.get_logger().warn('ESP32 did not report ready after a restart; '
+                                   'is it powered and running the SecureBot firmware?')
+        self.send_settings()
+        self.last_rx = time.monotonic()
+        self.last_reset = time.monotonic()
 
         self.mode, self.mode_time = 'stop', 0.0
         self.cmd, self.cmd_time = None, 0.0
@@ -115,21 +146,51 @@ class ESP32SerialBridge(Node):
         self.left_pub = self.create_publisher(Range, '/ultrasonic/left', 10)
         self.right_pub = self.create_publisher(Range, '/ultrasonic/right', 10)
         self.status_pub = self.create_publisher(String, '/esp32/status', 10)
+        self.imu_pub = self.create_publisher(Imu, '/imu', 20)
         self.create_timer(float(p('heartbeat_period')), self.send_current_command)
+        self.create_timer(1.0, self.check_silence)
 
         self.reader_thread = threading.Thread(target=self.read_serial_loop, daemon=True)
         self.reader_thread.start()
 
         self.get_logger().info(f'ESP32 bridge on {self.port}, patrol speed {self.patrol_speed}')
 
-    def drain_startup_backlog(self):
-        """Opening the port resets the ESP32, and the USB driver hands over everything the
-        board printed while no program had the port open. Wait for the reset, then drop it."""
-        time.sleep(2.0)
-        self.serial_port.reset_input_buffer()
-        end = time.monotonic() + 0.3
-        while time.monotonic() < end:
-            self.serial_port.read(4096)
+    def restart_esp32(self, wait=False):
+        """Restart the ESP32 into its program, as esptool does: RTS pulls EN low while DTR
+        keeps IO0 high. Drops what the USB driver buffered before (it replays old lines when
+        the port opens). With wait, reads until the firmware's ready line (only before the
+        reader thread runs), logs the firmware's boot messages (e.g. whether the IMU answered)
+        and returns whether the ready line came."""
+        s = self.serial_port
+        s.dtr = False
+        s.rts = True
+        time.sleep(0.1)
+        s.reset_input_buffer()
+        s.rts = False
+        if not wait:
+            return None
+        buf, end = b'', time.monotonic() + 4.0      # boot + ~1.3 s gyro calibration
+        while time.monotonic() < end and b'I,SecureBot' not in buf:
+            buf += s.read(256)
+        for raw in buf.decode('utf-8', errors='ignore').splitlines():
+            parsed = parse_line(raw.strip())
+            if parsed and parsed[0] == 'E':
+                self.get_logger().warn(f'ESP32: {parsed[1]}')
+            elif parsed and parsed[0] == 'I' and not parsed[1].startswith('SecureBot'):
+                self.get_logger().info(f'ESP32: {parsed[1]}')
+        return b'I,SecureBot' in buf
+
+    def send_settings(self):
+        self.write_line('stop')
+        self.write_line(f'speed {self.patrol_speed}')
+
+    def check_silence(self):
+        now = time.monotonic()
+        silent = now - self.last_rx
+        if silent > self.silence_reset and now - self.last_reset > self.silence_reset:
+            self.get_logger().error(f'No data from the ESP32 for {silent:.0f} s; restarting it')
+            self.last_reset = now
+            self.restart_esp32()
 
     def write_line(self, text):
         try:
@@ -151,6 +212,12 @@ class ESP32SerialBridge(Node):
         if command != self.last_sent:
             self.get_logger().info(f'ESP32 <- {command}')
             self.last_sent = command
+
+    def publish_imu(self, yaw_deg, rate_dps):
+        msg = imu_message(self.imu_sign * math.radians(yaw_deg),
+                          self.imu_sign * math.radians(rate_dps))
+        msg.header.stamp = self.get_clock().now().to_msg()
+        self.imu_pub.publish(msg)
 
     def publish_range(self, publisher, distance_ft, frame_id):
         msg = Range()
@@ -175,15 +242,20 @@ class ESP32SerialBridge(Node):
             parsed = parse_line(line) if line else None
             if parsed is None:
                 continue
+            self.last_rx = time.monotonic()
             if parsed[0] == 'U':
                 self.publish_range(self.left_pub, parsed[1], 'left_ultrasonic')
                 self.publish_range(self.right_pub, parsed[2], 'right_ultrasonic')
+            elif parsed[0] == 'G':
+                self.publish_imu(parsed[1], parsed[2])
             elif parsed[0] == 'S':
                 self.status_pub.publish(String(data=parsed[1]))
             elif parsed[0] == 'E':
                 self.get_logger().warn(f'ESP32: {parsed[1]}')
             else:
                 self.get_logger().info(f'ESP32: {parsed[1]}')
+                if parsed[1].startswith('SecureBot'):      # it restarted: settings are gone
+                    self.send_settings()
 
     def stop_motors(self):
         self.write_line('stop')

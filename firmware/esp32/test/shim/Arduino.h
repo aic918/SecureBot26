@@ -2,6 +2,7 @@
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,15 +12,18 @@
 #define LOW 0
 #define INPUT 0
 #define OUTPUT 1
+#define INPUT_PULLDOWN 9
 #define constrain(x, a, b) ((x) < (a) ? (a) : ((x) > (b) ? (b) : (x)))
 #define min(a, b) ((a) < (b) ? (a) : (b))
 
 unsigned long millis();
+unsigned long micros();
 void delay(unsigned long ms);
 void delayMicroseconds(unsigned int us);
 long pulseIn(int pin, int state, unsigned long timeout);
 void pinMode(int pin, int mode);
 void digitalWrite(int pin, int value);
+int digitalRead(int pin);
 void analogWrite(int pin, int value);
 // ESP32 LEDC (Arduino-ESP32 2.x API)
 double ledcSetup(int channel, double freq, int resolution_bits);

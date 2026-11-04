@@ -12,11 +12,43 @@ static std::string g_in, g_out;
 static size_t g_in_pos = 0;
 
 unsigned long millis() { return g_ms; }
+unsigned long micros() { return g_ms * 1000UL; }
+
+// Fake MPU-6050 on the I2C bus: registers written, a gyro Z reading tests can set.
+static bool g_imu_present = true;
+static int16_t g_gyro_z_raw = 0;
+static uint8_t g_imu_reg[128];
+static int g_wire_sda = -1, g_wire_scl = -1;
+static uint8_t g_tx[8];
+static int g_tx_len = 0, g_rx_pos = 0, g_rx_len = 0;
+static uint8_t g_rx[8];
+static bool g_tx_ok = false;
+TwoWire Wire;
+bool TwoWire::begin(int sda, int scl) { g_wire_sda = sda; g_wire_scl = scl; return true; }
+void TwoWire::setClock(uint32_t) {}
+void TwoWire::beginTransmission(uint8_t addr) { g_tx_len = 0; g_tx_ok = g_imu_present && addr == 0x68; }
+size_t TwoWire::write(uint8_t b) { if (g_tx_len < 8) g_tx[g_tx_len++] = b; return 1; }
+uint8_t TwoWire::endTransmission(bool) {
+  if (!g_tx_ok) return 2;                                  // NACK on address
+  if (g_tx_len == 2) g_imu_reg[g_tx[0] & 127] = g_tx[1];   // register write
+  return 0;
+}
+uint8_t TwoWire::requestFrom(int addr, int n) {
+  if (!g_imu_present || addr != 0x68) return 0;
+  if (g_tx_len >= 1 && g_tx[0] == 0x47 && n == 2) {        // GYRO_ZOUT_H, _L
+    g_rx[0] = (uint8_t)((uint16_t)g_gyro_z_raw >> 8); g_rx[1] = (uint8_t)(g_gyro_z_raw & 0xFF);
+    g_rx_len = 2; g_rx_pos = 0; return 2;
+  }
+  return 0;
+}
+int TwoWire::available() { return g_rx_len - g_rx_pos; }
+int TwoWire::read() { return g_rx_pos < g_rx_len ? g_rx[g_rx_pos++] : -1; }
 void delay(unsigned long) {}
 void delayMicroseconds(unsigned int) {}
 long pulseIn(int pin, int, unsigned long) { return g_echo_us[pin]; }
 void pinMode(int, int) {}
 void digitalWrite(int pin, int v) { g_pin[pin] = v; }
+int digitalRead(int pin) { return g_pin[pin]; }
 void analogWrite(int pin, int v) { g_pwm[pin] = v; }
 static int g_chan_pin[16];
 static int g_chan_bits[16];
@@ -69,7 +101,7 @@ const long ECHO_2FT = 3556;       // ~2.0 ft: clear
 static void t_boot() {
   boot(); step(10);
   CHECK(leftPWM() == 0 && rightPWM() == 0);
-  CHECK(outHas("I,SecureBot ESP32 fw 2.0 ready"));
+  CHECK(outHas("I,SecureBot ESP32 fw 2.1 ready"));
 }
 static void t_drive_and_clamp() {
   boot();
@@ -199,7 +231,8 @@ static void t_telemetry() {
 static void t_pinout() {
   int pins[] = {LEFT_EN, LEFT_IN_A, LEFT_IN_B, RIGHT_EN, RIGHT_IN_A, RIGHT_IN_B,
                 ULTRA_LEFT_TRIG, ULTRA_LEFT_ECHO, ULTRA_RIGHT_TRIG, ULTRA_RIGHT_ECHO,
-                LEFT_ENCODER_BLUE, LEFT_ENCODER_WHITE, RIGHT_ENCODER_BLUE, RIGHT_ENCODER_WHITE};
+                LEFT_ENCODER_BLUE, LEFT_ENCODER_WHITE, RIGHT_ENCODER_BLUE, RIGHT_ENCODER_WHITE,
+                IMU_SDA, IMU_SCL};
   int n = sizeof pins / sizeof pins[0];
   for (int i = 0; i < n; i++) for (int j = i + 1; j < n; j++) CHECK(pins[i] != pins[j]);
   CHECK(LEFT_EN == 27 && LEFT_IN_A == 32 && LEFT_IN_B == 14);
@@ -260,6 +293,66 @@ static void t_freq_command() {
   CHECK(leftPWM() == 0 && rightPWM() == 0 && outHas("E,watchdog"));
 }
 
+// ---------- IMU ----------
+static float glineYaw() {          // yaw from the last G line, or NAN
+  size_t i = g_out.rfind("G,");
+  return i == std::string::npos ? NAN : (float)atof(g_out.c_str() + i + 2);
+}
+static void t_imu_setup() {
+  g_gyro_z_raw = 131;              // a gyro that reads 2 deg/s standing still (bias)
+  boot();
+  CHECK(g_wire_sda == 21 && g_wire_scl == 22);
+  CHECK(g_imu_reg[0x6B] == 0x01 && g_imu_reg[0x1B] == 0x08 && g_imu_reg[0x1A] == 0x03);
+  CHECK(imuOk && fabs(imuBiasDps - 2.0) < 0.01);
+  CHECK(outHas("I,imu ready, gyro bias 2.000"));
+  step(200);
+  CHECK(outHas("G,") && fabs(glineYaw()) < 0.5);      // bias removed: yaw stays at 0
+}
+static void t_imu_yaw_integrates() {
+  g_gyro_z_raw = 131;
+  boot();
+  send("M,-300,300\n");                                // turning: bias tracking paused
+  g_gyro_z_raw = 131 + (int16_t)(90 * 65.5);           // +90 deg/s on top of the bias
+  stepHB(1000, "M,-300,300");
+  CHECK(fabs(yawDeg - 90.0) < 3.0);
+  g_gyro_z_raw = 131 - (int16_t)(90 * 65.5);           // and back
+  stepHB(1000, "M,300,-300");
+  CHECK(fabs(yawDeg) < 3.0);
+  g_gyro_z_raw = 131 + (int16_t)(120 * 65.5);          // wraps at 180
+  stepHB(2000, "M,-300,300");
+  CHECK(yawDeg < -110 && yawDeg > -130);               // 240 deg = -120 deg
+}
+static void t_imu_bias_tracks_when_still() {
+  g_gyro_z_raw = 0;
+  boot();
+  g_gyro_z_raw = 33;                                   // bias drifts to ~0.5 deg/s
+  step(15000);                                         // motors off: bias follows
+  CHECK(fabs(imuBiasDps - 33 / 65.5) < 0.05);
+  float yaw = yawDeg;
+  step(5000);
+  CHECK(fabs(yawDeg - yaw) < 0.3);                     // no more creep
+}
+static void t_imu_absent() {
+  g_imu_present = false;
+  boot();
+  CHECK(!imuOk && outHas("E,imu not found"));
+  CHECK(outHas("E,imu wire check (1 = connected): SDA/GPIO21=0 SCL/GPIO22=0"));
+  CHECK(outHas("I,SecureBot ESP32 fw 2.1 ready"));
+  step(500);
+  CHECK(!outHas("G,"));                                // no G lines, everything else runs
+  send("M,100,100\n"); step(5);
+  CHECK(leftPWM() == 100 && rightPWM() == 100);
+}
+static void t_imu_lost() {
+  boot();
+  CHECK(imuOk);
+  g_imu_present = false;                               // wire comes off while running
+  step(500);
+  CHECK(!imuOk && outHas("E,imu stopped answering"));
+  send("M,100,100\n"); step(5);
+  CHECK(leftPWM() == 100);
+}
+
 struct T { const char *name; void (*fn)(); };
 int main(int argc, char **argv) {
   T tests[] = {
@@ -269,7 +362,10 @@ int main(int argc, char **argv) {
     {"bad_command_not_heartbeat", t_bad_command_not_heartbeat},
     {"drive_obstacle_gate", t_drive_obstacle_gate}, {"single_glitch_ignored", t_single_glitch_ignored},
     {"patrol_avoidance_cycle", t_patrol_avoidance_cycle}, {"avoid_timeout", t_avoid_timeout},
-    {"telemetry", t_telemetry}};
+    {"telemetry", t_telemetry},
+    {"imu_setup", t_imu_setup}, {"imu_yaw_integrates", t_imu_yaw_integrates},
+    {"imu_bias_tracks_when_still", t_imu_bias_tracks_when_still}, {"imu_absent", t_imu_absent},
+    {"imu_lost", t_imu_lost}};
   if (argc < 2) { for (auto &t : tests) printf("%s\n", t.name); return 0; }
   for (auto &t : tests) if (!strcmp(t.name, argv[1])) { t.fn(); return failures ? 1 : 0; }
   printf("unknown test %s\n", argv[1]); return 2;

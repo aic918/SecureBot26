@@ -39,6 +39,8 @@ def test_parse_lines():
     assert parse_line('S,drive,90,90,0') == ('S', 'drive,90,90,0')
     assert parse_line('E,watchdog: no command, stopped') == ('E', 'watchdog: no command, stopped')
     assert parse_line('U,abc,1') is None
+    assert parse_line('G,-12.50,3.25') == ('G', -12.5, 3.25)
+    assert parse_line('G,1') is None
     assert parse_line('LEFT: 9.28 ft') is None
 
 
@@ -51,3 +53,13 @@ def test_min_pwm_lifts_small_commands_but_not_zero():
     left, right = twist_to_pwm(0.06, 0.4, *args)               # gentle left curve, slow
     assert right == 70 and 0 < left < right                    # still curves left
     assert twist_to_pwm(-0.05, 0.0, *args) == (-70, -70)
+
+
+def test_imu_message_heading_only():
+    import math
+    from securebot_base.esp32_serial_bridge import imu_message
+    m = imu_message(math.pi / 2, 0.5)
+    assert m.header.frame_id == 'base_link'
+    assert abs(2 * math.atan2(m.orientation.z, m.orientation.w) - math.pi / 2) < 1e-9
+    assert m.angular_velocity.z == 0.5
+    assert m.linear_acceleration_covariance[0] == -1.0

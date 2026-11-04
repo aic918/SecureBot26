@@ -12,6 +12,8 @@
 // ESP32 -> Jetson
 //   U,<left_ft>,<right_ft>   every TELEMETRY_MS; -1 means "no reading"
 //   S,<mode>,<leftPWM>,<rightPWM>,<avoidState>   every STATUS_MS
+//   G,<yaw_deg>,<yaw_rate_dps>   every IMU_TELEMETRY_MS, if the IMU answered at boot
+//                                (yaw: gyro Z integrated since boot, CCW positive, -180..180)
 //   I,<text>   information     E,<text>   error / safety event
 //
 // Safety:
@@ -21,6 +23,7 @@
 //   * Net-forward motion from M,l,r is blocked while an ultrasonic sensor sees an
 //     obstacle inside STOP_DISTANCE_FEET (rotating in place and reversing still work).
 #include <Arduino.h>
+#include <Wire.h>
 
 // ==================== PINOUT ====================
 // Motor driver (two channels). The RIGHT motor is on channel A and the LEFT motor
@@ -56,6 +59,10 @@ const int LEFT_ENCODER_WHITE = 35;
 #define ULTRA_RIGHT_TRIG 4
 #define ULTRA_RIGHT_ECHO 17
 
+// IMU: MPU-6050 board (HW-123 / GY-521) on the ESP32's default I2C pins, AD0 low
+const int IMU_SDA = 21;
+const int IMU_SCL = 22;
+
 // ==================== SETTINGS ====================
 // Motor PWM: 10-bit duty (0-1023) at 10 kHz. Chosen with tools/motor_tune.py on the floor
 // (2026-10-26): the robot needs ~650 to start from standstill (at 500 it needed a push).
@@ -74,6 +81,16 @@ const unsigned long WATCHDOG_MS = 250;           // stop if no valid command thi
 const unsigned long SENSOR_PERIOD_MS = 40;       // one sensor per tick, alternating
 const unsigned long TELEMETRY_MS = 100;
 const unsigned long STATUS_MS = 500;
+
+const uint8_t IMU_ADDRS[] = {0x68, 0x69};        // AD0 low / high
+const float IMU_LSB_PER_DPS = 65.5;              // gyro range +/-500 deg/s
+const unsigned long IMU_PERIOD_US = 5000;        // sample the gyro at 200 Hz
+const unsigned long IMU_TELEMETRY_MS = 50;       // G line at 20 Hz
+const int IMU_CALIBRATE_SAMPLES = 400;           // ~1.2 s at boot, motors stopped
+const int IMU_MAX_FAILS = 20;                    // consecutive bad reads -> IMU off
+const unsigned long IMU_STILL_MS = 1000;         // motors off this long -> refine the bias
+const float IMU_STILL_DPS = 1.0;                 // ... while the gyro reads below this
+const float IMU_BIAS_RATE = 0.002;               // bias update per sample when still
 
 const float STOP_DISTANCE_FEET = 1.0;    // 12 inches
 const float CLEAR_DISTANCE_FEET = 1.5;   // 18 inches
@@ -109,6 +126,16 @@ unsigned long lastSensorMs = 0;
 unsigned long lastTelemetryMs = 0;
 unsigned long lastStatusMs = 0;
 
+bool imuOk = false;
+uint8_t imuAddr = 0x68;
+int imuFails = 0;
+float imuBiasDps = 0;
+float yawDeg = 0;
+float yawRateDps = 0;
+unsigned long lastImuUs = 0;
+unsigned long lastImuTelemetryMs = 0;
+unsigned long motorsStillSinceMs = 0;
+
 char lineBuf[48];
 size_t lineLen = 0;
 bool lineOverflow = false;
@@ -124,6 +151,11 @@ void runAvoidance(int &left, int &right);
 void applyMotors(int left, int right);
 void setMotor(int channel, int inA, int inB, int pwm);
 void sendTelemetry();
+void setupImu();
+void printI2cScan();
+void updateImu();
+bool imuWrite(uint8_t reg, uint8_t value);
+bool imuReadGyroZ(int16_t &raw);
 float readUltrasonicFeet(int trigPin, int echoPin);
 bool validDistance(float distanceFeet);
 bool obstacleAhead();
@@ -150,7 +182,8 @@ void setup() {
   pinMode(ULTRA_RIGHT_ECHO, INPUT);
 
   Serial.begin(115200);
-  Serial.println("I,SecureBot ESP32 fw 2.0 ready");
+  setupImu();                      // motors are already stopped: safe to calibrate
+  Serial.println("I,SecureBot ESP32 fw 2.1 ready");
 }
 
 // ==================== LOOP ====================
@@ -158,6 +191,7 @@ void loop() {
   readSerial();
   checkWatchdog();
   updateSensors();
+  updateImu();
   controlMotors();
   sendTelemetry();
   delay(1);
@@ -325,6 +359,129 @@ bool pathClear() {
          (!validDistance(rightUltraFeet) || rightUltraFeet > CLEAR_DISTANCE_FEET);
 }
 
+// ==================== IMU (MPU-6050 gyro Z) ====================
+bool imuWrite(uint8_t reg, uint8_t value) {
+  Wire.beginTransmission(imuAddr);
+  Wire.write(reg);
+  Wire.write(value);
+  return Wire.endTransmission() == 0;
+}
+
+bool imuReadGyroZ(int16_t &raw) {
+  Wire.beginTransmission(imuAddr);
+  Wire.write(0x47);                          // GYRO_ZOUT_H
+  if (Wire.endTransmission(false) != 0) return false;
+  if (Wire.requestFrom((int)imuAddr, 2) != 2) return false;
+  int hi = Wire.read();
+  int lo = Wire.read();
+  raw = (int16_t)((hi << 8) | lo);
+  return true;
+}
+
+// Wake the MPU-6050, set +/-500 deg/s and a 44 Hz filter, then average the gyro while the
+// robot stands still to get its bias. Leaves imuOk false (and says so) if it does not answer.
+// Print every I2C address that answers on the current pins, in decimal (104 = 0x68).
+void printI2cScan() {
+  bool any = false;
+  for (uint8_t a = 1; a < 127; a++) {
+    Wire.beginTransmission(a);
+    if (Wire.endTransmission() == 0) {
+      Serial.print(" ");
+      Serial.print((int)a);
+      any = true;
+    }
+  }
+  if (!any) Serial.print(" none");
+}
+
+void setupImu() {
+  Wire.begin(IMU_SDA, IMU_SCL);
+  Wire.setClock(100000);                     // standard speed: robust on longer wires
+  bool found = false;
+  for (uint8_t a : IMU_ADDRS) {
+    imuAddr = a;
+    if (imuWrite(0x6B, 0x01)) {              // PWR_MGMT_1: awake, clock from the X gyro
+      found = true;
+      break;
+    }
+  }
+  if (!found || !imuWrite(0x1A, 0x03) ||     // CONFIG: digital low-pass ~44 Hz
+      !imuWrite(0x1B, 0x08)) {               // GYRO_CONFIG: +/-500 deg/s
+    Serial.print("E,imu not found (MPU-6050 on SDA 21 / SCL 22); i2c devices (decimal):");
+    printI2cScan();
+    Serial.println();
+    // The module's pull-up resistors hold SDA and SCL high; against the ESP32's weak
+    // pull-down a connected wire reads 1, a loose or missing one (or no shared GND) reads 0.
+    pinMode(IMU_SDA, INPUT_PULLDOWN);
+    pinMode(IMU_SCL, INPUT_PULLDOWN);
+    delay(5);
+    Serial.print("E,imu wire check (1 = connected): SDA/GPIO21=");
+    Serial.print(digitalRead(IMU_SDA));
+    Serial.print(" SCL/GPIO22=");
+    Serial.println(digitalRead(IMU_SCL));
+    Wire.begin(IMU_SCL, IMU_SDA);            // in case SDA and SCL are swapped
+    Serial.print("E,imu wiring check with SDA/SCL swapped, devices:");
+    printI2cScan();
+    Serial.println();
+    Wire.begin(IMU_SDA, IMU_SCL);
+    return;
+  }
+  delay(100);                                // gyro start-up
+  long sum = 0;
+  int good = 0;
+  for (int i = 0; i < IMU_CALIBRATE_SAMPLES; i++) {
+    int16_t raw;
+    if (imuReadGyroZ(raw)) {
+      sum += raw;
+      good++;
+    }
+    delay(3);
+  }
+  if (good < IMU_CALIBRATE_SAMPLES / 2) {
+    Serial.println("E,imu not answering, gyro off");
+    return;
+  }
+  imuBiasDps = (float)sum / good / IMU_LSB_PER_DPS;
+  imuOk = true;
+  imuFails = 0;
+  yawDeg = 0;
+  lastImuUs = micros();
+  Serial.print("I,imu ready, gyro bias ");
+  Serial.print(imuBiasDps, 3);
+  Serial.println(" deg/s");
+}
+
+// Integrate gyro Z into yawDeg. While the motors have been off for a while and the gyro
+// reads almost nothing, nudge the bias towards the reading so slow drift is cancelled.
+void updateImu() {
+  if (!imuOk) return;
+  unsigned long nowUs = micros();
+  if (nowUs - lastImuUs < IMU_PERIOD_US) return;
+  float dt = (nowUs - lastImuUs) * 1e-6f;
+  lastImuUs = nowUs;
+  int16_t raw;
+  if (!imuReadGyroZ(raw)) {
+    if (++imuFails >= IMU_MAX_FAILS) {
+      imuOk = false;
+      Serial.println("E,imu stopped answering, gyro off");
+    }
+    return;
+  }
+  imuFails = 0;
+  yawRateDps = raw / IMU_LSB_PER_DPS - imuBiasDps;
+
+  unsigned long nowMs = millis();
+  if (appliedLeft != 0 || appliedRight != 0) {
+    motorsStillSinceMs = nowMs;
+  } else if (nowMs - motorsStillSinceMs >= IMU_STILL_MS && fabs(yawRateDps) < IMU_STILL_DPS) {
+    imuBiasDps += IMU_BIAS_RATE * yawRateDps;
+    yawRateDps *= 1.0f - IMU_BIAS_RATE;
+  }
+  yawDeg += yawRateDps * dt;
+  if (yawDeg > 180.0f) yawDeg -= 360.0f;
+  if (yawDeg < -180.0f) yawDeg += 360.0f;
+}
+
 // ==================== MOTION ====================
 void controlMotors() {
   int left = 0;
@@ -452,6 +609,14 @@ void sendTelemetry() {
     Serial.print(validDistance(leftUltraFeet) ? leftUltraFeet : -1.0f, 2);
     Serial.print(",");
     Serial.println(validDistance(rightUltraFeet) ? rightUltraFeet : -1.0f, 2);
+  }
+
+  if (imuOk && now - lastImuTelemetryMs >= IMU_TELEMETRY_MS) {
+    lastImuTelemetryMs = now;
+    Serial.print("G,");
+    Serial.print(yawDeg, 2);
+    Serial.print(",");
+    Serial.println(yawRateDps, 2);
   }
 
   if (now - lastStatusMs >= STATUS_MS) {
