@@ -1,177 +1,108 @@
 # SecureBot
 
-Autonomous security robot (Senior Design). Patrols, avoids obstacles, detects
-people with YOLO11, and uses face recognition to decide whether to resume
-patrol or hold a security stop.
+Autonomous security robot (Senior Design). It maps and explores rooms with a LiDAR, navigates
+saved maps, avoids obstacles, spots people with YOLO11 and uses face recognition to decide
+whether to keep patrolling or hold a security stop.
 
-## Architecture
-- **Jetson Orin Nano (high level):** camera, YOLO11n person detection, face
-  recognition, ROS 2 Humble nodes, security logic.
-- **ESP32 (low level):** motor PWM, two HC-SR04 ultrasonics, obstacle avoidance;
-  newline-terminated commands over USB serial, 115200 baud.
+## How it fits together
+- **Jetson Orin Nano:** ROS 2 Humble, camera, person detection, face recognition, mapping,
+  navigation and the security logic.
+- **ESP32:** drives the motors and reads the two front ultrasonic sensors; it takes commands
+  from the Jetson over USB.
+- **RPLidar A1M8:** 360° scans for mapping, exploring and navigation.
 
-## Layout
 ```
-src/securebot_base/   ESP32 serial bridge (/cmd_vel -> motors, ultrasonics -> Range)
-src/securebot_ros/    live vision node, YOLO node, motion manager, patrol, enroll_faces
+src/securebot_base/   link between ROS and the ESP32 (motors, ultrasonics)
+src/securebot_ros/    vision, security logic, mapping, exploring, navigation, Rooms window
+firmware/esp32/       ESP32 firmware
+tools/                stand-alone helpers (LiDAR viewer, motor tuning)
+maps/                 saved maps and room names
 ```
 
-## Not in git (set up locally)
-| What | Default location | Why |
-|---|---|---|
-| YOLO weights `yolo11n.pt` | `~/SecureBot/yolo11n.pt` | large binary; get from Ultralytics |
-| Face photos | `~/yolo/securebot_face_id/authorized_faces/<name>/` | biometric data |
-| Face encodings `.pkl` | `~/yolo/securebot_face_id/encodings/authorized_faces.pkl` | biometric data |
-| Python venv | `~/yolo-env` | machine-specific |
+## Setup (once)
+Some files are not in git and live on the robot: YOLO weights (`~/SecureBot/yolo11n.pt`), the
+authorized face photos and encodings (`~/yolo/securebot_face_id/`) and the Python venv
+(`~/yolo-env`). Never commit them.
 
-Never commit these (they are in `.gitignore`).
-
-## Build
 ```bash
-source /opt/ros/humble/setup.bash
+sudo apt install ros-humble-rplidar-ros ros-humble-laser-filters
 cd ~/securebot_ws
+vcs import src < deps.repos                  # LiDAR odometry package, built from source
+source /opt/ros/humble/setup.bash
 colcon build --symlink-install
-source install/setup.bash
 ```
 
-## Python environment
+Python environment for the vision node (install the Jetson torch wheels separately):
 ```bash
 python3 -m venv ~/yolo-env --system-site-packages
-source ~/yolo-env/bin/activate
-pip install -r requirements.txt   # install Jetson torch/torchvision wheels separately
+~/yolo-env/bin/pip install -r requirements.txt
 ```
 
 ## Run
-Build first (see above), then:
+Start every terminal with:
 ```bash
 source /opt/ros/humble/setup.bash && source ~/securebot_ws/install/setup.bash
-ros2 launch securebot_ros securebot_live.launch.py
 ```
-The launch file runs the node with the `~/yolo-env` venv's Python and adds the venv's NVIDIA
-libraries to `LD_LIBRARY_PATH` (torch fails with `libcudss.so.0` otherwise). Plain
-`ros2 run securebot_ros securebot_live_node` uses the system Python and will fail on
-`import face_recognition`; use the launch file.
+Run one launch at a time: only one program can talk to the ESP32.
 
-Options (anything left out keeps the node's default):
-```bash
-ros2 launch securebot_ros securebot_live.launch.py \
-    venv:=~/yolo-env model_path:=~/SecureBot/yolo11n.pt motor_speed:=88 \
-    enable_motors:=false show_camera:=false
-```
-`enable_motors:=false` skips the ESP32 serial port, which is handy for testing vision alone.
-
-Enroll authorized faces (one folder of photos per person) before the first run:
-```bash
-~/yolo-env/bin/python src/securebot_ros/securebot_ros/enroll_faces.py   # see --help for paths
-```
-In the camera window: **S** start, **X** stop, **Q** quit.
-
-## LiDAR viewer (temporary, before ROS)
-Live top-down view of the RPLidar A1M8 with the camera tower's blind spot measured and shaded.
-Needs only pyserial and matplotlib (system Python); it never talks to the ESP32.
-```bash
-python3 tools/lidar_viewer.py               # finds the LiDAR (it answers a device-info request)
-python3 tools/lidar_viewer.py /dev/ttyUSB0  # or name the port
-python3 tools/lidar_viewer.py --demo        # simulated room + tower, no hardware
-```
-Orange points closer than `--tower-cm` (20) are the robot itself; gray wedges are angles with no
-usable return in ~15 s. To measure the blind spot, press **c**, then walk once around the robot
-holding a board ~50 cm away: what stays gray is blocked by the tower. Keys: **space** pause,
-**s** save PNG + CSV, **+/-** zoom, **q** quit. Tests: `python3 -m unittest tools.test_lidar_viewer`.
-
-## LiDAR in ROS (RPLidar A1M8)
-One-time install: `sudo apt install ros-humble-rplidar-ros ros-humble-laser-filters`.
-```bash
-ros2 launch securebot_ros securebot_lidar.launch.py             # /scan_raw -> filter -> /scan
-ros2 launch securebot_ros securebot_lidar.launch.py rviz:=true  # plus a top-down RViz view
-```
-`/scan` has the camera tower's shadow (laser frame 140-229 deg) and self-hits closer than
-20 cm masked as "nothing seen" (`config/lidar_filters.yaml`). The LiDAR sits right behind the
-tower, so the laser frame is turned 180 deg (`laser_yaw`) to make base_link +x the robot's
-front. The port defaults to the LiDAR's USB socket path, so keep it in the same socket. The
-`base_link -> laser` offsets (`laser_x/y/z`) are placeholders until the URDF exists.
-
-## Mapping (SLAM)
-rf2o laser odometry (`odom -> base_link`, from matching consecutive scans) + slam_toolbox
-(`map -> odom`). rf2o is built from source: `vcs import src < deps.repos` (or
-`git -C src clone -b ros2 https://github.com/MAPIRlab/rf2o_laser_odometry.git`), then
-`colcon build`.
-```bash
-ros2 launch securebot_ros securebot_slam.launch.py        # opens RViz with the map
-ros2 run nav2_map_server map_saver_cli -f maps/<name> --ros-args -p save_map_timeout:=10.0
-```
-Move the robot slowly (it can be pushed by hand; no wheel odometry is used): about walking pace,
-gentle turns, and come back to the start so the map closes the loop. The tower blocks the view
-straight ahead, so turn the robot now and then to let the LiDAR see what it is driving towards.
-
-Drive it from the keyboard instead of pushing (two more terminals; hold a key to move, let go
-to stop; the camera is not needed):
-```bash
-ros2 launch securebot_ros securebot_teleop.launch.py   # bridge + motion manager, keyboard mode
-ros2 run securebot_ros teleop_keyboard                 # w/s/a/d, q/e curves, space stop, x quit
-```
-Starts at 0.15 m/s and 0.6 rad/s (`+`/`-` change it, capped at 0.25 m/s and 1.0 rad/s).
-The robot needs a PWM of ~650 (of 1023, at 10 kHz) to start moving, so every wheel that should
-turn gets at least 650 (`min_pwm`); for now it drives at one speed and steers and stops.
-
-## Navigation (Nav2)
-AMCL localizes on a saved map (starting pose = where mapping started, or RViz "2D Pose
-Estimate"); Regulated Pure Pursuit drives at up to 0.2 m/s; the local costmap uses the LiDAR
-and both ultrasonics (they cover the tower's blind wedge ahead); a collision monitor (stop zone
-15-35 cm ahead, slowdown to 60 cm, fed by LiDAR + ultrasonics) is the last check before the
-robot. Nav2's commands end on `/nav_cmd_vel`, so the security gate still decides.
-```bash
-ros2 launch securebot_ros securebot_live.launch.py idle_action:=stop     # robot side
-ros2 launch securebot_ros securebot_nav.launch.py map:=$HOME/securebot_ws/maps/<name>.yaml
-```
-Then "Nav2 Goal" in RViz. `idle_action:=stop` makes the robot stop when Nav2 has no goal
-instead of starting the firmware patrol. The footprint is 495 mm long (the case) x 512 mm wide
-(the 192 mm drive wheels sit outside the 360 mm case, 440 mm apart centre to centre), centred
-on `base_link` (the case centre until the axle position is measured); RViz draws the case and
-wheels to scale from `urdf/securebot.urdf`. Sensor positions are still placeholders. First runs: wheels off
-the ground.
-
-## Autonomous room exploration
+**Explore and map a room**
 ```bash
 ros2 launch securebot_ros securebot_explore.launch.py
 ```
-Starts mapping (with RViz), the robot side in keyboard mode (no camera needed), the explore node
-and a "SecureBot Explore" window with **START** / **STOP**. On Start the robot drives in one
-continuous path: every 0.1 s it scores the directions ahead by how far it can go (LiDAR points,
-walls in the map, and straight ahead, where the LiDAR is blind behind the tower, the
-ultrasonics), preferring unexplored space, places it has not driven and keeping off walls,
-and steers towards the best one while moving. An ultrasonic reading of 1 ft or less, or a
-LiDAR point within 1 ft ahead, stops it; it backs up, turns on the spot towards the most open
-direction (not the one it was blocked in) and drives on. It stops by itself when the room is
-at least 90 % scanned: the share of the explored area's edge that is wall rather than
-unexplored space (`coverage_goal:=0.9`, checked every 2 s once it has driven 1 m). It also
-stops if the robot does not move or turn when commanded, has nowhere to go, or if the map
-pose or an ultrasonic goes silent. Unexplored edges (orange) and the steering direction
-(cyan arrow) show in RViz. Save the map afterwards with `map_saver_cli` (see Mapping).
+Opens RViz, the Explore window and the Rooms window. Press **START**; the robot drives around
+the room by itself, avoiding obstacles, and stops when the room is about 90 % mapped
+(or when you press **STOP**). Then save the map from the Rooms window.
 
-## Motor tuning (PWM frequency and power)
-`python3 tools/motor_tune.py` drives the ESP32 directly (stop the bridge first): hold w/s/a/d;
-keys 1/2, 3/4, 5/6, 7/8 step the frequency down/up by 50, 100, 500, 1000 Hz; Shift + the same
-keys step the power by 10, 25, 50, 100 (+/- by 25).
-Find the lowest power that starts the robot from standstill at a frequency that does not whine. Tests:
-`python3 -m unittest tools.test_motor_tune`.
-
-## Serial ownership and the motion chain
-Only `esp32_serial_bridge` opens the ESP32 port. `securebot_live.launch.py` starts the chain:
+**Manage rooms and view saved maps**
+```bash
+ros2 run securebot_ros room_manager
 ```
-securebot_live_node --/security/motion (stop|patrol)--> motion_manager_node
-motion_manager_node --/esp32/mode (stop|patrol|drive), /cmd_vel--> esp32_serial_bridge --> ESP32
-```
-`motion_manager_node` stops when security says stop or goes quiet for 1 s, drives with
-`/nav_cmd_vel` while one arrives (Nav2/teleop later), and otherwise uses the firmware's own
-patrol (drive forward + ultrasonic avoidance). The bridge resends the command every 0.1 s (firmware watchdog 250 ms),
-treats inputs older than 0.5 s as stop, drops the serial backlog on startup, and publishes
-`/ultrasonic/left|right` and `/esp32/status`.
+Lists every saved map. Click one to view it; name, rename or remove rooms; point a room at a
+newer scan; delete old maps; save the map being built right now as a new room; or copy the
+command that navigates on a map.
 
-See the LiDAR and both ultrasonics together (robot held in stop):
-`ros2 launch securebot_ros securebot_sensors.launch.py`
+**Run laps round a saved room**
+```bash
+ros2 launch securebot_ros securebot_laps.launch.py room:="Kumar's Lab"
+```
+Plans laps that sweep the whole scanned floor: the first lap follows the walls and goes round
+the furniture, and each next lap is one lane (0.45 m) further in, until the middle is reached.
+The robot keeps 0.65 m from the walls: room to turn its 495 x 512 mm body (wheels included)
+anywhere on a lap and to keep the front more than 1 ft from a wall it faces at a corner, where the
+firmware would stop it (gaps narrower than ~1.3 m are skipped). Nav2 drives the laps and steers round anything new in the way. Put the
+robot where mapping started (or set "2D Pose Estimate" in RViz), then press **START** in the
+Laps window; it keeps lapping until **STOP** (`rounds:=N` stops after N rounds). The planned
+laps show in RViz in blue.
+
+**Navigate a saved map**
+```bash
+ros2 launch securebot_ros securebot_live.launch.py idle_action:=stop
+ros2 launch securebot_ros securebot_nav.launch.py map:=$HOME/securebot_ws/maps/<name>.yaml
+```
+Set a goal with "Nav2 Goal" in RViz. The security logic can still stop the robot.
+
+**Security patrol (camera + face recognition)**
+```bash
+ros2 launch securebot_ros securebot_live.launch.py
+```
+Enroll authorized faces first (`~/yolo-env/bin/python src/securebot_ros/securebot_ros/enroll_faces.py`).
+In the camera window: **S** start, **X** stop, **Q** quit. `enable_motors:=false` tests vision
+without driving.
+
+**Map by hand (keyboard driving)**
+```bash
+ros2 launch securebot_ros securebot_slam.launch.py
+ros2 launch securebot_ros securebot_teleop.launch.py
+ros2 run securebot_ros teleop_keyboard       # w/a/s/d to drive, space to stop, x to quit
+```
+
+**Check the sensors**
+```bash
+ros2 launch securebot_ros securebot_sensors.launch.py   # LiDAR + ultrasonics, robot held still
+python3 tools/lidar_viewer.py                           # LiDAR alone, no ROS
+```
 
 ## Contributing
 - Branch from `main` (`feat/<sprint>-<name>`) and open a PR; `main` needs owner review.
 - Test motor changes with the wheels off the ground first.
-- Never commit weights, face data, or secrets.
+- Never commit weights, face data or secrets.

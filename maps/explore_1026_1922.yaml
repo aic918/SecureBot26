@@ -1,0 +1,7 @@
+image: explore_1026_1922.pgm
+mode: trinary
+resolution: 0.05
+origin: [-7.69, -9.55, 0]
+negate: 0
+occupied_thresh: 0.65
+free_thresh: 0.25
