@@ -41,6 +41,10 @@ entry_points={
         'explore_node = securebot_ros.explore_node:main',
         'explore_panel = securebot_ros.explore_panel:main',
         'lidar_reset = securebot_ros.lidar_reset:main',
+        'room_manager = securebot_ros.room_manager:main',
+        'laps_node = securebot_ros.laps_node:main',
+        'laps_panel = securebot_ros.laps_panel:main',
+        'heading_odom_node = securebot_ros.heading_odom_node:main',
     ],
 },
 

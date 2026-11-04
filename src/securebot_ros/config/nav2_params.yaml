@@ -17,10 +17,10 @@
 amcl:
   ros__parameters:
     use_sim_time: false
-    alpha1: 0.2
-    alpha2: 0.2
+    alpha1: 0.05                 # rotation noise from rotation: heading comes from the gyro now
+    alpha2: 0.1
     alpha3: 0.2
-    alpha4: 0.2
+    alpha4: 0.1                  # translation noise from rotation: spins are pure rotation
     alpha5: 0.2
     base_frame_id: base_link
     beam_skip_distance: 0.5
@@ -33,8 +33,8 @@ amcl:
     laser_max_range: 10.0
     laser_min_range: 0.2
     laser_model_type: likelihood_field
-    max_beams: 60
-    max_particles: 1000
+    max_beams: 120
+    max_particles: 600           # CPU: the Jetson is busy
     min_particles: 200
     odom_frame_id: odom
     pf_err: 0.05
@@ -44,14 +44,14 @@ amcl:
     resample_interval: 1
     robot_model_type: nav2_amcl::DifferentialMotionModel
     save_pose_rate: 0.5
-    sigma_hit: 0.2
+    sigma_hit: 0.1               # 5 cm map: a sharper match pins the position better
     tf_broadcast: true
     transform_tolerance: 1.0
-    update_min_a: 0.15
-    update_min_d: 0.1
-    z_hit: 0.5
+    update_min_a: 0.1
+    update_min_d: 0.05
+    z_hit: 0.8
     z_max: 0.05
-    z_rand: 0.5
+    z_rand: 0.2
     z_short: 0.05
     scan_topic: scan
     set_initial_pose: true
@@ -63,7 +63,7 @@ bt_navigator:
     robot_base_frame: base_link
     odom_topic: /odom
     bt_loop_duration: 10
-    default_server_timeout: 20
+    default_server_timeout: 250        # ms; 20 was too short on the loaded Jetson (BT kept cancelling)
     wait_for_service_timeout: 1000
     plugin_lib_names: [nav2_compute_path_to_pose_action_bt_node, nav2_compute_path_through_poses_action_bt_node,
       nav2_smooth_path_action_bt_node, nav2_follow_path_action_bt_node, nav2_spin_action_bt_node, nav2_wait_action_bt_node,
@@ -138,7 +138,7 @@ local_costmap:
         mark_threshold: 0.8
         phi: 1.2
         inflate_cone: 1.0
-        no_readings_timeout: 2.0
+        no_readings_timeout: 0.0      # off: in Humble one timeout at startup leaves the costmap "not current" for good and the controller waits forever
         input_sensor_type: VARIABLE
 global_costmap:
   global_costmap:
@@ -165,7 +165,7 @@ map_server:
   ros__parameters: {use_sim_time: false, yaml_filename: ''}
 planner_server:
   ros__parameters:
-    expected_planner_frequency: 20.0
+    expected_planner_frequency: 5.0
     use_sim_time: false
     planner_plugins: [GridBased]
     GridBased: {plugin: nav2_navfn_planner/NavfnPlanner, tolerance: 0.5, use_astar: false, allow_unknown: true}
@@ -225,7 +225,7 @@ collision_monitor:
       type: polygon
       action_type: stop
       max_points: 3
-      points: [0.4475, 0.28, 0.4475, -0.28, 0.2475, -0.28, 0.2475, 0.28]
+      points: [0.3475, 0.28, 0.3475, -0.28, 0.2475, -0.28, 0.2475, 0.28]   # 10 cm: lets the robot turn on the spot near furniture (the lap follower stops forward driving at 1 ft)
       visualize: true
       polygon_pub_topic: polygon_stop
       enabled: true

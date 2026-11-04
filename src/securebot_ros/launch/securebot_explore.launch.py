@@ -6,7 +6,8 @@ Starts: SLAM (LiDAR, laser odometry, slam_toolbox, RViz), the robot side in keyb
 (ESP32 bridge + motion manager: no camera needed, stops when nothing is commanded), the
 explore node and the "SecureBot Explore" window. Nothing moves until you press START; STOP
 (or closing the window, or Ctrl+C here) stops it. When the room is >= 90 % scanned the robot
-stops by itself; save the map then:
+stops by itself; save the map then with "Save current map as a new room..." in the
+"SecureBot Rooms" window (rooms:=false leaves that window out), or by hand:
   ros2 run nav2_map_server map_saver_cli -f maps/<name> --ros-args -p save_map_timeout:=10.0
 
 Don't run it together with the live, teleop or nav launches (only one program can own the
@@ -17,6 +18,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -30,6 +32,8 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('coverage_goal', default_value='0.9',
                               description='stop when this fraction of the room is scanned'),
+        DeclareLaunchArgument('rooms', default_value='true',
+                              description='also open the SecureBot Rooms window'),
         GroupAction(scoped=True, actions=[IncludeLaunchDescription(
             PythonLaunchDescriptionSource(launch('securebot_slam.launch.py')))]),
         GroupAction(scoped=True, actions=[IncludeLaunchDescription(
@@ -38,4 +42,6 @@ def generate_launch_description():
              parameters=[{'coverage_goal': ParameterValue(LaunchConfiguration('coverage_goal'),
                                                           value_type=float)}]),
         Node(package='securebot_ros', executable='explore_panel', output='screen'),
+        Node(package='securebot_ros', executable='room_manager', output='screen',
+             condition=IfCondition(LaunchConfiguration('rooms'))),
     ])

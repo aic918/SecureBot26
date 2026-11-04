@@ -1,4 +1,5 @@
-"""Navigate on a saved map: LiDAR + rf2o odometry + AMCL localization + Nav2 + collision monitor.
+"""Navigate on a saved map: LiDAR + rf2o odometry (heading from the gyro, imu:=true) + AMCL
+localization + Nav2 + collision monitor.
 
   terminal 1:  ros2 launch securebot_ros securebot_live.launch.py idle_action:=stop
   terminal 2:  ros2 launch securebot_ros securebot_nav.launch.py map:=$HOME/securebot_ws/maps/<name>.yaml
@@ -15,7 +16,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription
-from launch.conditions import IfCondition
+from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -35,6 +36,8 @@ def generate_launch_description():
         DeclareLaunchArgument('params',
                               default_value=os.path.join(share, 'config', 'nav2_params.yaml')),
         DeclareLaunchArgument('rviz', default_value='true'),
+        DeclareLaunchArgument('imu', default_value='true',
+                              description='heading from the ESP32 gyro (/imu) instead of rf2o'),
     ]
 
     # Scoped, so the included launch's rviz:=false does not switch off this file's RViz too.
@@ -46,13 +49,22 @@ def generate_launch_description():
     ultrasonic_tf = IncludeLaunchDescription(PythonLaunchDescriptionSource(
         os.path.join(share, 'launch', 'securebot_ultrasonic_tf.launch.py')))
 
-    odometry = Node(
-        package='rf2o_laser_odometry', executable='rf2o_laser_odometry_node',
-        name='rf2o_laser_odometry', output='screen',
-        parameters=[{'laser_scan_topic': '/scan', 'odom_topic': '/odom', 'publish_tf': True,
-                     'base_frame_id': 'base_link', 'odom_frame_id': 'odom',
-                     'init_pose_from_topic': '', 'freq': 10.0}],
-    )
+    # rf2o alone (imu:=false) publishes /odom and odom -> base_link itself; with the gyro it
+    # feeds heading_odom_node, which keeps rf2o's position and takes the gyro's heading.
+    def rf2o(condition, topic, tf):
+        return Node(
+            package='rf2o_laser_odometry', executable='rf2o_laser_odometry_node',
+            name='rf2o_laser_odometry', output='screen', condition=condition,
+            parameters=[{'laser_scan_topic': '/scan', 'odom_topic': topic, 'publish_tf': tf,
+                         'base_frame_id': 'base_link', 'odom_frame_id': 'odom',
+                         'init_pose_from_topic': '', 'freq': 10.0}],
+        )
+    odometry = [
+        rf2o(UnlessCondition(arg('imu')), '/odom', True),
+        rf2o(IfCondition(arg('imu')), '/odom_laser', False),
+        Node(package='securebot_ros', executable='heading_odom_node', output='screen',
+             condition=IfCondition(arg('imu'))),
+    ]
 
     def nav2(package, executable, name, remappings=()):
         return Node(package=package, executable=executable, name=name, output='screen',
@@ -85,4 +97,4 @@ def generate_launch_description():
                 condition=IfCondition(arg('rviz')),
                 arguments=['-d', os.path.join(share, 'rviz', 'nav.rviz')])
 
-    return LaunchDescription(args + [lidar, ultrasonic_tf, odometry] + nodes + managers + [rviz])
+    return LaunchDescription(args + [lidar, ultrasonic_tf] + odometry + nodes + managers + [rviz])
