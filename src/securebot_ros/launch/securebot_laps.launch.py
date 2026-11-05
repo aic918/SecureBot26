@@ -10,6 +10,10 @@ up in the Rooms window's list (maps/rooms.json). AMCL starts at the map's origin
 mapping started: put the robot there facing the same way, or use "2D Pose Estimate" in RViz.
 Nothing moves until you press START; STOP (or closing the window, or Ctrl+C here) stops it.
 
+pattern:=lanes (default) drives straight parallel lanes along the room's main walls, keeping
+side_clearance beside things and front_clearance ahead at lane ends; pattern:=contour drives
+rings at wall_clearance from the walls, outside in.
+
 rounds:=0 keeps lapping until Stop. Don't run it together with the live, teleop, explore or
 other nav launches (only one program can own the ESP32 port).
 """
@@ -50,14 +54,20 @@ def launch_setup(context):
     return [
         GroupAction(scoped=True, actions=[IncludeLaunchDescription(
             PythonLaunchDescriptionSource(launch('securebot_nav.launch.py')),
-            launch_arguments={'map': map_yaml, 'rviz': get('rviz')}.items())]),
+            launch_arguments={'map': map_yaml, 'rviz': get('rviz'),
+                              'imu': get('imu')}.items())]),
         GroupAction(scoped=True, actions=[IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(launch('securebot_teleop.launch.py')))]),
+            PythonLaunchDescriptionSource(launch('securebot_teleop.launch.py')),
+            launch_arguments={'port': get('esp32_port')}.items())]),
         Node(package='securebot_ros', executable='laps_node', output='screen',
              parameters=[{'map': map_yaml, 'room': get('room') or os.path.basename(map_yaml),
                           'rounds': int(get('rounds')),
                           'lane_spacing': float(get('lane_spacing')),
-                          'wall_clearance': float(get('wall_clearance'))}]),
+                          'wall_clearance': float(get('wall_clearance')),
+                          'pattern': get('pattern'),
+                          'side_clearance': float(get('side_clearance')),
+                          'front_clearance': float(get('front_clearance')),
+                          'require_gyro': get('imu') == 'true'}]),
         Node(package='securebot_ros', executable='laps_panel', output='screen'),
     ]
 
@@ -73,8 +83,20 @@ def generate_launch_description():
                               description='rounds of laps to drive; 0 = until Stop'),
         DeclareLaunchArgument('lane_spacing', default_value='0.45',
                               description='m between neighbouring laps (robot is 0.512 wide)'),
+        DeclareLaunchArgument('pattern', default_value='lanes',
+                              description="'lanes' (straight lanes) or 'contour' (rings)"),
         DeclareLaunchArgument('wall_clearance', default_value='0.65',
-                              description='m from the robot centre to walls'),
+                              description='contour: m from the robot centre to walls'),
+        DeclareLaunchArgument('side_clearance', default_value='0.50',
+                              description='lanes: m from the robot centre to anything beside it'),
+        DeclareLaunchArgument('front_clearance', default_value='0.60',
+                              description='lanes: m from the robot centre to a wall ahead'),
         DeclareLaunchArgument('rviz', default_value='true'),
+        DeclareLaunchArgument('imu', default_value='true',
+                              description='use the gyro for heading; false = LiDAR only'),
+        DeclareLaunchArgument(
+            'esp32_port',
+            default_value='/dev/serial/by-path/platform-3610000.usb-usb-0:2.4:1.0-port0',
+            description='ESP32 serial port (by USB socket path)'),
         OpaqueFunction(function=launch_setup),
     ])

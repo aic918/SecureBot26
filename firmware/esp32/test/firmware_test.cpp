@@ -16,6 +16,7 @@ unsigned long micros() { return g_ms * 1000UL; }
 
 // Fake MPU-6050 on the I2C bus: registers written, a gyro Z reading tests can set.
 static bool g_imu_present = true;
+static bool g_imu_wired = true;      // module pull-ups on SDA/SCL: the pins read 1
 static int16_t g_gyro_z_raw = 0;
 static uint8_t g_imu_reg[128];
 static int g_wire_sda = -1, g_wire_scl = -1;
@@ -26,7 +27,13 @@ static bool g_tx_ok = false;
 TwoWire Wire;
 bool TwoWire::begin(int sda, int scl) { g_wire_sda = sda; g_wire_scl = scl; return true; }
 void TwoWire::setClock(uint32_t) {}
-void TwoWire::beginTransmission(uint8_t addr) { g_tx_len = 0; g_tx_ok = g_imu_present && addr == 0x68; }
+void TwoWire::setTimeOut(uint16_t) {}
+static int g_wake_after_writes = 0;          // >0: the IMU starts answering after this many tries
+void TwoWire::beginTransmission(uint8_t addr) {
+  g_tx_len = 0;
+  if (g_wake_after_writes > 0 && --g_wake_after_writes == 0) g_imu_present = true;
+  g_tx_ok = g_imu_present && addr == 0x68;
+}
 size_t TwoWire::write(uint8_t b) { if (g_tx_len < 8) g_tx[g_tx_len++] = b; return 1; }
 uint8_t TwoWire::endTransmission(bool) {
   if (!g_tx_ok) return 2;                                  // NACK on address
@@ -49,6 +56,25 @@ long pulseIn(int pin, int, unsigned long) { return g_echo_us[pin]; }
 void pinMode(int, int) {}
 void digitalWrite(int pin, int v) { g_pin[pin] = v; }
 int digitalRead(int pin) { return g_pin[pin]; }
+static int g_mv[64];
+int analogReadMilliVolts(int pin) { g_ms++; return g_mv[pin]; }
+static void (*g_isr[64])();
+int digitalPinToInterrupt(int pin) { return pin; }
+void attachInterrupt(int irq, void (*isr)(), int) { g_isr[irq] = isr; }
+void interrupts() {}
+void noInterrupts() {}
+// drive one encoder's two wires through `steps` quadrature steps (+ forward, - backward)
+static void turnEncoder(int pinA, int pinB, int steps) {
+  static const int seq[4][2] = {{0, 0}, {0, 1}, {1, 1}, {1, 0}};
+  int k = 0;
+  for (int i = 0; i < 4; i++) if (g_pin[pinA] == seq[i][0] && g_pin[pinB] == seq[i][1]) k = i;
+  for (int n = 0; n < abs(steps); n++) {
+    k = (k + (steps > 0 ? 1 : 3)) % 4;
+    int changed = g_pin[pinA] != seq[k][0] ? pinA : pinB;
+    g_pin[pinA] = seq[k][0]; g_pin[pinB] = seq[k][1];
+    g_isr[changed]();
+  }
+}
 void analogWrite(int pin, int v) { g_pwm[pin] = v; }
 static int g_chan_pin[16];
 static int g_chan_bits[16];
@@ -64,10 +90,12 @@ void SerialClass::print(const char *s) { g_out += s; }
 void SerialClass::print(char c) { g_out += c; }
 void SerialClass::print(int v) { g_out += std::to_string(v); }
 void SerialClass::print(unsigned long v) { g_out += std::to_string(v); }
+void SerialClass::print(long v) { g_out += std::to_string(v); }
 void SerialClass::print(double v, int d) { char b[32]; snprintf(b, sizeof b, "%.*f", d, v); g_out += b; }
 void SerialClass::println() { g_out += "\n"; }
 void SerialClass::println(const char *s) { g_out += s; g_out += "\n"; }
 void SerialClass::println(int v) { print(v); g_out += "\n"; }
+void SerialClass::println(long v) { print(v); g_out += "\n"; }
 void SerialClass::println(double v, int d) { print(v, d); g_out += "\n"; }
 
 // ---------- helpers ----------
@@ -93,7 +121,11 @@ static void stepHB(int ms, const std::string &cmd) {
   for (int i = 0; i < ms; i++) { if (g_ms % 100 == 0) send(cmd + "\n"); g_ms++; loop(); }
 }
 static bool outHas(const char *s) { return g_out.find(s) != std::string::npos; }
-static void boot() { memset(g_pin, 0, sizeof g_pin); memset(g_pwm, 0, sizeof g_pwm); setup(); }
+static void boot() {
+  memset(g_pin, 0, sizeof g_pin); memset(g_pwm, 0, sizeof g_pwm);
+  g_pin[IMU_SDA] = g_pin[IMU_SCL] = g_imu_wired;
+  setup();
+}
 const long ECHO_HALF_FT = 889;    // ~0.5 ft: inside stop distance
 const long ECHO_2FT = 3556;       // ~2.0 ft: clear
 
@@ -261,7 +293,7 @@ static void t_polarity() {
   send("M,-100,-100\n"); step(5);                // both wheels backward
   CHECK(g_pin[LEFT_IN_A] == HIGH && g_pin[LEFT_IN_B] == LOW);
   CHECK(g_pin[RIGHT_IN_A] == LOW && g_pin[RIGHT_IN_B] == HIGH);
-  send("stop\n"); step(5);                       // stopped: both inputs low
+  send("stop\n"); step(200);                     // stopped (after the 150 ms brake): both low
   CHECK(g_pin[LEFT_IN_A] == LOW && g_pin[LEFT_IN_B] == LOW && g_pwm[LEFT_EN] == 0);
   CHECK(g_pin[RIGHT_IN_A] == LOW && g_pin[RIGHT_IN_B] == LOW && g_pwm[RIGHT_EN] == 0);
 }
@@ -334,14 +366,29 @@ static void t_imu_bias_tracks_when_still() {
 }
 static void t_imu_absent() {
   g_imu_present = false;
+  g_imu_wired = false;                                 // wires off: I2C is never started
   boot();
   CHECK(!imuOk && outHas("E,imu not found"));
-  CHECK(outHas("E,imu wire check (1 = connected): SDA/GPIO21=0 SCL/GPIO22=0"));
+  CHECK(outHas("E,imu not found (MPU-6050 on SDA 21 / SCL 22); wire check (1 = connected): SDA=0 SCL=0"));
   CHECK(outHas("I,SecureBot ESP32 fw 2.1 ready"));
   step(500);
   CHECK(!outHas("G,"));                                // no G lines, everything else runs
   send("M,100,100\n"); step(5);
   CHECK(leftPWM() == 100 && rightPWM() == 100);
+}
+static void t_imu_wired_but_silent() {
+  g_imu_present = false;                               // wires there, chip does not answer
+  boot();
+  CHECK(!imuOk && outHas("wire check (1 = connected): SDA=1 SCL=1"));
+  CHECK(outHas("E,imu i2c devices"));
+  CHECK(outHas("I,SecureBot ESP32 fw 2.1 ready"));
+}
+static void t_imu_slow_to_wake() {
+  // the MPU-6050 NACKs for a while after power-on: setup must keep trying
+  g_imu_present = false;
+  g_wake_after_writes = 6;
+  boot();
+  CHECK(imuOk && outHas("I,imu ready"));
 }
 static void t_imu_lost() {
   boot();
@@ -351,6 +398,46 @@ static void t_imu_lost() {
   CHECK(!imuOk && outHas("E,imu stopped answering"));
   send("M,100,100\n"); step(5);
   CHECK(leftPWM() == 100);
+}
+
+static void t_brakes_after_a_stop() {
+  boot();
+  send("M,300,-300\n"); step(5);                      // spinning on the spot
+  CHECK(leftPWM() == 300 && rightPWM() == -300);
+  send("M,0,0\n"); step(5);
+  // short brake: both inputs high, enable on (the helpers read that as 0 = not driving)
+  CHECK(g_pin[LEFT_IN_A] == HIGH && g_pin[LEFT_IN_B] == HIGH && g_pwm[LEFT_EN] > 0);
+  CHECK(g_pin[RIGHT_IN_A] == HIGH && g_pin[RIGHT_IN_B] == HIGH && g_pwm[RIGHT_EN] > 0);
+  CHECK(leftPWM() == 0 && rightPWM() == 0);
+  step(200);                                           // then released: free, no current
+  CHECK(g_pin[LEFT_IN_A] == LOW && g_pin[LEFT_IN_B] == LOW && g_pwm[LEFT_EN] == 0);
+  CHECK(g_pin[RIGHT_IN_A] == LOW && g_pin[RIGHT_IN_B] == LOW && g_pwm[RIGHT_EN] == 0);
+  send("M,100,100\n"); step(5);                       // driving again cancels any brake
+  CHECK(leftPWM() == 100 && rightPWM() == 100);
+}
+
+static void t_encoders() {
+  boot();
+  CHECK(outHas("I,encoders idle levels"));
+  CHECK(g_isr[LEFT_ENCODER_BLUE] && g_isr[LEFT_ENCODER_WHITE] && g_isr[RIGHT_ENCODER_BLUE] && g_isr[RIGHT_ENCODER_WHITE]);
+  turnEncoder(LEFT_ENCODER_BLUE, LEFT_ENCODER_WHITE, 100);
+  turnEncoder(RIGHT_ENCODER_BLUE, RIGHT_ENCODER_WHITE, -40);
+  CHECK(leftTicks == 100 && rightTicks == -40);       // direction comes from the channel order
+  turnEncoder(LEFT_ENCODER_BLUE, LEFT_ENCODER_WHITE, -30);
+  CHECK(leftTicks == 70);
+  g_out.clear(); step(60);
+  CHECK(outHas("W,70,-40"));
+}
+
+static void t_encoder_scope() {
+  boot();
+  send("M,300,300\n"); step(5);
+  for (int i = 0; i < 64; i++) g_mv[i] = 3300;
+  g_mv[LEFT_ENCODER_BLUE] = 200;                    // a line that does go low
+  send("encscope\n"); step(1);
+  CHECK(leftPWM() == 0 && rightPWM() == 0);          // motors stopped for the measurement
+  CHECK(outHas("I,encscope GPIO34 min/avg/max mV 200/200/200 low 100%"));
+  CHECK(outHas("I,encscope GPIO35 min/avg/max mV 3300/3300/3300 low 0%"));
 }
 
 struct T { const char *name; void (*fn)(); };
@@ -365,7 +452,7 @@ int main(int argc, char **argv) {
     {"telemetry", t_telemetry},
     {"imu_setup", t_imu_setup}, {"imu_yaw_integrates", t_imu_yaw_integrates},
     {"imu_bias_tracks_when_still", t_imu_bias_tracks_when_still}, {"imu_absent", t_imu_absent},
-    {"imu_lost", t_imu_lost}};
+    {"imu_lost", t_imu_lost}, {"imu_wired_but_silent", t_imu_wired_but_silent}, {"imu_slow_to_wake", t_imu_slow_to_wake}, {"brakes_after_a_stop", t_brakes_after_a_stop}, {"encoders", t_encoders}, {"encoder_scope", t_encoder_scope}};
   if (argc < 2) { for (auto &t : tests) printf("%s\n", t.name); return 0; }
   for (auto &t : tests) if (!strcmp(t.name, argv[1])) { t.fn(); return failures ? 1 : 0; }
   printf("unknown test %s\n", argv[1]); return 2;

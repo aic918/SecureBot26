@@ -65,9 +65,17 @@ class LapsNode(Node):
         self.declare_parameter('rounds', 0)                   # 0 = keep lapping until Stop
         self.declare_parameter('lane_spacing', defaults.lane_spacing)
         self.declare_parameter('wall_clearance', defaults.wall_clearance)
+        self.declare_parameter('pattern', 'lanes')            # 'lanes' or 'contour'
+        self.declare_parameter('require_gyro', True)          # refuse Start without /imu
+        self.declare_parameter('side_clearance', defaults.side_clearance)
+        self.declare_parameter('front_clearance', defaults.front_clearance)
         get = lambda n: self.get_parameter(n).value  # noqa: E731
         params = cl.Params(lane_spacing=float(get('lane_spacing')),
-                           wall_clearance=float(get('wall_clearance')))
+                           wall_clearance=float(get('wall_clearance')),
+                           pattern=str(get('pattern')),
+                           side_clearance=float(get('side_clearance')),
+                           front_clearance=float(get('front_clearance')))
+        self.unit = 'lane' if params.pattern == 'lanes' else 'loop'
         self.room = get('room') or get('map')
         self.m = cl.load_map(get('map'))
         with open(get('map')) as f:
@@ -166,7 +174,7 @@ class LapsNode(Node):
 
     def loop_text(self):
         r = self.runner
-        return (f'Round {r.round + 1}, loop {r.index + 1} of {len(r.plan.loops)}'
+        return (f'Round {r.round + 1}, {self.unit} {r.index + 1} of {len(r.plan.loops)}'
                 + (' (retrying)' if r.failures else ''))
 
     # ---------------------------------------------------------------- commands
@@ -185,7 +193,7 @@ class LapsNode(Node):
             self.set_state('error', 'Robot position unknown: set "2D Pose Estimate" in RViz '
                                     '(or wait for localization) and press START again')
             return
-        if time.monotonic() - self.imu_time > 2.0:
+        if self.get_parameter('require_gyro').value and time.monotonic() - self.imu_time > 2.0:
             self.set_state('error', 'No gyro data (/imu): check the MPU-6050 wiring (VCC, GND, '
                                     'SDA 21, SCL 22) and restart; laps need it to turn')
             return
@@ -251,8 +259,10 @@ class LapsNode(Node):
     def check_position(self, now, points):
         """While standing still, correct AMCL if the scan fits the map clearly better nearby."""
         f = self.follower
+        # standing still: waiting at an obstacle, or stopped before a turn's first spin (a
+        # correction between the spins of a turn moved the target and made it spin back)
         still = f.state == 'blocked' or (f.state == 'turn' and f.phase == 'settle'
-                                         and now - f.phase_start > 0.25)
+                                         and f.spins == 0 and now - f.phase_start > 0.25)
         if not still or now - self.last_check < CHECK_PERIOD or len(points) < 50:
             return
         self.last_check = now

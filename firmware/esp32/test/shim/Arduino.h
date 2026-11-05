@@ -13,6 +13,9 @@
 #define INPUT 0
 #define OUTPUT 1
 #define INPUT_PULLDOWN 9
+#define INPUT_PULLUP 5
+#define CHANGE 3
+#define IRAM_ATTR
 #define constrain(x, a, b) ((x) < (a) ? (a) : ((x) > (b) ? (b) : (x)))
 #define min(a, b) ((a) < (b) ? (a) : (b))
 
@@ -24,6 +27,12 @@ long pulseIn(int pin, int state, unsigned long timeout);
 void pinMode(int pin, int mode);
 void digitalWrite(int pin, int value);
 int digitalRead(int pin);
+int analogReadMilliVolts(int pin);
+#define max(a, b) ((a) > (b) ? (a) : (b))
+int digitalPinToInterrupt(int pin);
+void attachInterrupt(int irq, void (*isr)(), int mode);
+void interrupts();
+void noInterrupts();
 void analogWrite(int pin, int value);
 // ESP32 LEDC (Arduino-ESP32 2.x API)
 double ledcSetup(int channel, double freq, int resolution_bits);
@@ -39,10 +48,12 @@ struct SerialClass {
   void print(char c);
   void print(int v);
   void print(unsigned long v);
+  void print(long v);
   void print(double v, int digits = 2);
   void println();
   void println(const char *s);
   void println(int v);
+  void println(long v);
   void println(double v, int digits = 2);
 };
 extern SerialClass Serial;

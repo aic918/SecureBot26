@@ -1,5 +1,8 @@
 """Coverage laps on a saved map (no ROS): plan loops that sweep the whole scanned floor.
 
+Two patterns (Params.pattern): 'contour' (below) and 'lanes', straight parallel lanes with a
+direction-dependent wall offset (lane_logic).
+
 Contour-parallel coverage, the "laps" pattern used by cleaning and patrol robots (and one of
 the patterns in coverage planners such as Fields2Cover / opennav_coverage):
 
@@ -39,6 +42,11 @@ class Params:
     simplify: float = 0.10         # m: straighten wiggles smaller than this (fewer waypoints)
     min_loop: float = 1.0          # m: loops shorter than this are skipped
     fill_holes: float = 0.15       # m: unseen gaps narrower than this inside count as free
+    pattern: str = 'contour'       # 'contour' laps or straight 'lanes'
+    side_clearance: float = 0.50   # lanes: centre to anything beside it (turn on the spot)
+    front_clearance: float = 0.60  # lanes: centre to anything ahead at a lane end (1 ft stop)
+    lane_angle: float = None       # lanes: radians, None = the angle with the fewest lanes
+    min_lane: float = 1.0          # lanes: shorter ones cost two turns for little floor: dropped
 
 
 @dataclass
@@ -46,6 +54,7 @@ class Map:
     free: np.ndarray               # bool [rows, cols], row 0 = top of the image (max y)
     resolution: float
     origin: tuple                  # (x, y) of the bottom-left pixel corner
+    wall: np.ndarray = None        # bool: cells the LiDAR saw as occupied (None = all not free)
 
     def to_world(self, row, col):
         return (self.origin[0] + (col + 0.5) * self.resolution,
@@ -64,6 +73,7 @@ class Plan:
     length: float = 0.0            # m, all loops, without the moves between them
     area: float = 0.0              # m², reachable floor
     swept: np.ndarray = field(default=None, repr=False)     # bool mask of swept floor
+    angle: float = None            # lanes: the lane angle used (radians)
 
 
 def load_map(yaml_path):
@@ -82,8 +92,9 @@ def load_map(yaml_path):
     free = occ < float(meta.get('free_thresh', 0.25))
     if meta.get('mode', 'trinary') == 'trinary':
         free &= img != 205
+    wall = occ > float(meta.get('occupied_thresh', 0.65))
     origin = meta.get('origin', [0.0, 0.0, 0.0])
-    return Map(free, float(meta['resolution']), (float(origin[0]), float(origin[1])))
+    return Map(free, float(meta['resolution']), (float(origin[0]), float(origin[1])), wall)
 
 
 def _disk(radius_px):
@@ -92,10 +103,13 @@ def _disk(radius_px):
 
 
 def floor_mask(m, fill_holes):
-    """Free cells, with small unseen gaps that free space surrounds filled in."""
+    """Free cells, with small unseen gaps that free space surrounds filled in. Only unseen
+    cells are filled: anything the LiDAR saw as occupied (a desk or chair leg is thinner than
+    `fill_holes`) stays an obstacle."""
     free = m.free.astype(np.uint8)
     closed = cv2.morphologyEx(free, cv2.MORPH_CLOSE, _disk(fill_holes / m.resolution / 2))
-    return closed.astype(bool)
+    wall = m.wall if m.wall is not None else ~m.free
+    return closed.astype(bool) & ~wall
 
 
 def reachable(m, p, start=None):
@@ -187,19 +201,57 @@ def order_loops(loops, start):
     return out, levels
 
 
-def swept_floor(m, loops, width=WIDTH):
-    """Cells the body passes over while driving the loops."""
+def swept_floor(m, loops, width=WIDTH, closed=True):
+    """Cells the body passes over while driving the loops (open paths with closed=False)."""
     mask = np.zeros(m.free.shape, np.uint8)
     thick = max(1, int(round(width / m.resolution)))
     for loop in loops:
         cells = np.array([m.to_cell(x, y)[::-1] for x, y in loop], np.int32)   # (col, row)
-        cv2.polylines(mask, [cells], True, 1, thickness=thick)
+        cv2.polylines(mask, [cells], closed, 1, thickness=thick)
     return mask.astype(bool)
+
+
+def lane_plan(m, p, start=None):
+    """Straight-lane plan: one path per lane (the way there + the lane), in drive order.
+    Without p.lane_angle, plans angles around the room's main wall direction and the one
+    across it, and keeps the cheapest (estimated time + unswept floor)."""
+    from securebot_ros import lane_logic as ll
+    space, _, floor = ll.centre_space(m, p, start)
+    body = cv2.dilate(space.astype(np.uint8), _disk(WIDTH / 2 / m.resolution)).astype(bool)
+    floor = body & floor
+    if p.lane_angle is not None:
+        angles = [p.lane_angle]
+    else:
+        # the result swings with a degree or two (where lanes clip desk corners): try every
+        # degree within 3 of the walls and of the direction across them
+        wall = ll.wall_angle(m)
+        angles = [(wall + base + math.radians(d)) % math.pi
+                  for base in (0.0, math.pi / 2) for d in range(-3, 4)]
+    best = None
+    for angle in angles:
+        lane_list, _ = ll.lanes(m, p, start, angle)
+        paths = ll.chain(m, p, lane_list, start) if lane_list else []
+        swept = swept_floor(m, paths, closed=False) & floor
+        route = [pt for path in paths for pt in path]
+        turns, degrees = ll.turn_count(route) if route else (0, 0.0)
+        length = sum(math.dist(a, b) for a, b in zip(route, route[1:]))
+        uncovered = float((floor & ~swept).sum()) * m.resolution ** 2
+        cost = (length / ll.DRIVE_MPS + turns * ll.LANE_END_S / 2
+                + ll.UNCOVERED_S_PER_M2 * uncovered)
+        if best is None or cost < best[0]:
+            best = (cost, angle, paths, swept, length)
+    _, angle, paths, swept, length = best
+    return Plan(loops=paths, levels=[0] * len(paths), swept=swept,
+                area=float(floor.sum()) * m.resolution ** 2,
+                coverage=float(swept.sum()) / max(int(floor.sum()), 1),
+                length=length, angle=angle)
 
 
 def plan(m, p=None, start=None):
     """Coverage plan from `start` (x, y in the map frame; None = from the first loop)."""
     p = p or Params()
+    if p.pattern == 'lanes':
+        return lane_plan(m, p, start)
     loops, levels = order_loops(lap_loops(m, p, start), start)
     floor, _ = reachable(m, p, start)
     swept = swept_floor(m, loops) & floor

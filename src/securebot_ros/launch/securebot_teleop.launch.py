@@ -23,8 +23,12 @@ def generate_launch_description():
     arg = LaunchConfiguration
     return LaunchDescription([
         DeclareLaunchArgument('min_pwm', default_value='650'),     # of 1023 (10-bit duty)
+        DeclareLaunchArgument(
+            'port', default_value='/dev/serial/by-path/platform-3610000.usb-usb-0:2.4:1.0-port0',
+            description='ESP32 serial port (by USB socket path)'),
         Node(package='securebot_ros', executable='motion_manager_node', output='screen',
              parameters=[{'require_security': False, 'idle_action': 'stop'}]),
         Node(package='securebot_base', executable='esp32_serial_bridge', output='screen',
-             parameters=[{'min_pwm': ParameterValue(arg('min_pwm'), value_type=int)}]),
+             parameters=[{'min_pwm': ParameterValue(arg('min_pwm'), value_type=int),
+                          'port': arg('port')}]),
     ])

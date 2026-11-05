@@ -74,6 +74,11 @@ robot where mapping started (or set "2D Pose Estimate" in RViz), then press **ST
 Laps window; it keeps lapping until **STOP** (`rounds:=N` stops after N rounds). The planned
 laps show in RViz in blue.
 
+Two patterns: `pattern:=lanes` (default) drives straight parallel lanes along the room's main
+walls, 0.50 m from anything beside the robot and stopping 0.60 m before a wall ahead
+(`side_clearance`, `front_clearance`); it reaches about 67-70% of Kumar's Lab. The robot holds each lane with the gyro and stops to turn on the spot at every corner. `pattern:=contour`
+drives rings 0.65 m from the walls, outside in (`wall_clearance`), and reaches about 43%.
+
 **Navigate a saved map**
 ```bash
 ros2 launch securebot_ros securebot_live.launch.py idle_action:=stop

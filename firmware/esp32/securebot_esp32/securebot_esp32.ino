@@ -13,6 +13,8 @@
 //   U,<left_ft>,<right_ft>   every TELEMETRY_MS; -1 means "no reading"
 //   S,<mode>,<leftPWM>,<rightPWM>,<avoidState>   every STATUS_MS
 //   G,<yaw_deg>,<yaw_rate_dps>   every IMU_TELEMETRY_MS, if the IMU answered at boot
+//   W,<left_ticks>,<right_ticks> every IMU_TELEMETRY_MS: wheel encoder counts since boot
+//                                (quadrature, both edges of both channels; + = that wheel forward)
 //                                (yaw: gyro Z integrated since boot, CCW positive, -180..180)
 //   I,<text>   information     E,<text>   error / safety event
 //
@@ -59,6 +61,11 @@ const int LEFT_ENCODER_WHITE = 35;
 #define ULTRA_RIGHT_TRIG 4
 #define ULTRA_RIGHT_ECHO 17
 
+// Encoders: the two channels of each wheel are decoded together (x4 quadrature), so which
+// wire is A and which is B only decides the sign, set by *_ENCODER_REVERSED.
+const bool LEFT_ENCODER_REVERSED = false;
+const bool RIGHT_ENCODER_REVERSED = false;
+
 // IMU: MPU-6050 board (HW-123 / GY-521) on the ESP32's default I2C pins, AD0 low
 const int IMU_SDA = 21;
 const int IMU_SCL = 22;
@@ -75,6 +82,7 @@ const int LEFT_PWM_CHANNEL = 1;       // LEDC channels (Arduino-ESP32 2.x API)
 const int RIGHT_PWM_CHANNEL = 0;
 const int MAX_PWM = 655;              // hard cap on any wheel PWM, every command path
 const int DEFAULT_SPEED_PWM = 650;    // legacy-command speed until "speed N" is received
+const unsigned long BRAKE_MS = 150;   // short brake after a motor stops (see outputMotor)
 
 const unsigned long WATCHDOG_MS = 250;           // stop if no valid command this long
                                                  // (the ROS bridge resends every 100 ms)
@@ -136,6 +144,13 @@ unsigned long lastImuUs = 0;
 unsigned long lastImuTelemetryMs = 0;
 unsigned long motorsStillSinceMs = 0;
 
+volatile long leftTicks = 0;
+volatile long rightTicks = 0;
+volatile uint8_t leftEncState = 0;
+volatile uint8_t rightEncState = 0;
+// x4 quadrature: index = previous state (2 bits) << 2 | new state; value = step
+const int8_t QUAD_STEP[16] = {0, 1, -1, 0, -1, 0, 0, 1, 1, 0, 0, -1, 0, -1, 1, 0};
+
 char lineBuf[48];
 size_t lineLen = 0;
 bool lineOverflow = false;
@@ -149,9 +164,13 @@ void updateSensors();
 void controlMotors();
 void runAvoidance(int &left, int &right);
 void applyMotors(int left, int right);
+void outputMotor(int m, int channel, int inA, int inB, int pwm);
 void setMotor(int channel, int inA, int inB, int pwm);
 void sendTelemetry();
+void imuWireCheck(int &sda, int &scl);
 void setupImu();
+void setupEncoders();
+void encoderScope();
 void printI2cScan();
 void updateImu();
 bool imuWrite(uint8_t reg, uint8_t value);
@@ -182,7 +201,9 @@ void setup() {
   pinMode(ULTRA_RIGHT_ECHO, INPUT);
 
   Serial.begin(115200);
+  Serial.println("I,booting");     // before the IMU: a stuck I2C bus shows up as silence after it
   setupImu();                      // motors are already stopped: safe to calibrate
+  setupEncoders();
   Serial.println("I,SecureBot ESP32 fw 2.1 ready");
 }
 
@@ -254,6 +275,8 @@ void handleCommand(char *cmd) {
     speedPWM = constrain(atoi(cmd + 6), 0, MAX_PWM);
     Serial.print("I,speed ");
     Serial.println(speedPWM);
+  } else if (strcmp(cmd, "encscope") == 0) {
+    encoderScope();                           // diagnostic: stops the motors, takes ~3 s
   } else if (strncmp(cmd, "freq ", 5) == 0) {
     int hz = constrain(atoi(cmd + 5), MIN_PWM_FREQ_HZ, MAX_PWM_FREQ_HZ);
     if (ledcChangeFrequency(LEFT_PWM_CHANNEL, hz, PWM_BITS) != 0 &&
@@ -394,36 +417,56 @@ void printI2cScan() {
   if (!any) Serial.print(" none");
 }
 
+// The module's pull-up resistors hold SDA and SCL high; against the ESP32's weak pull-down a
+// connected wire reads 1, a loose or missing one (or no shared GND) reads 0.
+void imuWireCheck(int &sda, int &scl) {
+  pinMode(IMU_SDA, INPUT_PULLDOWN);
+  pinMode(IMU_SCL, INPUT_PULLDOWN);
+  delay(5);
+  sda = digitalRead(IMU_SDA);
+  scl = digitalRead(IMU_SCL);
+}
+
 void setupImu() {
+  // Check the wires before starting I2C: with a wire missing the bus has no pull-up and the
+  // ESP32's I2C driver can hang for good, so the board would never finish booting.
+  int sda, scl;
+  imuWireCheck(sda, scl);
+  if (!sda || !scl) {
+    Serial.print("E,imu not found (MPU-6050 on SDA 21 / SCL 22); wire check (1 = connected): SDA=");
+    Serial.print(sda);
+    Serial.print(" SCL=");
+    Serial.println(scl);
+    return;
+  }
   Wire.begin(IMU_SDA, IMU_SCL);
   Wire.setClock(100000);                     // standard speed: robust on longer wires
+  Wire.setTimeOut(10);                       // ms: a stuck bus must not stall the boot
+  // After a power-on the MPU-6050 needs up to ~100 ms before it answers: keep trying ~1 s.
   bool found = false;
-  for (uint8_t a : IMU_ADDRS) {
-    imuAddr = a;
-    if (imuWrite(0x6B, 0x01)) {              // PWR_MGMT_1: awake, clock from the X gyro
-      found = true;
-      break;
+  for (int attempt = 0; attempt < 20 && !found; attempt++) {
+    for (uint8_t a : IMU_ADDRS) {
+      imuAddr = a;
+      if (imuWrite(0x6B, 0x01)) {            // PWR_MGMT_1: awake, clock from the X gyro
+        found = true;
+        break;
+      }
     }
+    if (!found) delay(50);
   }
   if (!found || !imuWrite(0x1A, 0x03) ||     // CONFIG: digital low-pass ~44 Hz
       !imuWrite(0x1B, 0x08)) {               // GYRO_CONFIG: +/-500 deg/s
-    Serial.print("E,imu not found (MPU-6050 on SDA 21 / SCL 22); i2c devices (decimal):");
-    printI2cScan();
-    Serial.println();
-    // The module's pull-up resistors hold SDA and SCL high; against the ESP32's weak
-    // pull-down a connected wire reads 1, a loose or missing one (or no shared GND) reads 0.
-    pinMode(IMU_SDA, INPUT_PULLDOWN);
-    pinMode(IMU_SCL, INPUT_PULLDOWN);
-    delay(5);
-    Serial.print("E,imu wire check (1 = connected): SDA/GPIO21=");
-    Serial.print(digitalRead(IMU_SDA));
-    Serial.print(" SCL/GPIO22=");
-    Serial.println(digitalRead(IMU_SCL));
-    Wire.begin(IMU_SCL, IMU_SDA);            // in case SDA and SCL are swapped
-    Serial.print("E,imu wiring check with SDA/SCL swapped, devices:");
-    printI2cScan();
-    Serial.println();
+    imuWireCheck(sda, scl);
+    Serial.print("E,imu not found (MPU-6050 on SDA 21 / SCL 22); wire check (1 = connected): SDA=");
+    Serial.print(sda);
+    Serial.print(" SCL=");
+    Serial.println(scl);
     Wire.begin(IMU_SDA, IMU_SCL);
+    if (sda && scl) {                        // both wires there: list what answers (slow)
+      Serial.print("E,imu i2c devices (decimal):");
+      printI2cScan();
+      Serial.println();
+    }
     return;
   }
   delay(100);                                // gyro start-up
@@ -480,6 +523,82 @@ void updateImu() {
   yawDeg += yawRateDps * dt;
   if (yawDeg > 180.0f) yawDeg -= 360.0f;
   if (yawDeg < -180.0f) yawDeg += 360.0f;
+}
+
+// ==================== WHEEL ENCODERS ====================
+void IRAM_ATTR leftEncoderIsr() {
+  uint8_t now = (digitalRead(LEFT_ENCODER_BLUE) << 1) | digitalRead(LEFT_ENCODER_WHITE);
+  leftTicks += QUAD_STEP[(leftEncState << 2) | now];
+  leftEncState = now;
+}
+
+void IRAM_ATTR rightEncoderIsr() {
+  uint8_t now = (digitalRead(RIGHT_ENCODER_BLUE) << 1) | digitalRead(RIGHT_ENCODER_WHITE);
+  rightTicks += QUAD_STEP[(rightEncState << 2) | now];
+  rightEncState = now;
+}
+
+// GPIO 13 and 18 have internal pull-ups; 34 and 35 are input-only without them, so the left
+// encoder relies on external pull-ups. The boot line shows each wire's idle level.
+void setupEncoders() {
+  pinMode(RIGHT_ENCODER_BLUE, INPUT_PULLUP);
+  pinMode(RIGHT_ENCODER_WHITE, INPUT_PULLUP);
+  pinMode(LEFT_ENCODER_BLUE, INPUT);
+  pinMode(LEFT_ENCODER_WHITE, INPUT);
+  leftEncState = (digitalRead(LEFT_ENCODER_BLUE) << 1) | digitalRead(LEFT_ENCODER_WHITE);
+  rightEncState = (digitalRead(RIGHT_ENCODER_BLUE) << 1) | digitalRead(RIGHT_ENCODER_WHITE);
+  attachInterrupt(digitalPinToInterrupt(LEFT_ENCODER_BLUE), leftEncoderIsr, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(LEFT_ENCODER_WHITE), leftEncoderIsr, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(RIGHT_ENCODER_BLUE), rightEncoderIsr, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(RIGHT_ENCODER_WHITE), rightEncoderIsr, CHANGE);
+  Serial.print("I,encoders idle levels L34/L35/R13/R18: ");
+  Serial.print(digitalRead(LEFT_ENCODER_BLUE));
+  Serial.print(digitalRead(LEFT_ENCODER_WHITE));
+  Serial.print(digitalRead(RIGHT_ENCODER_BLUE));
+  Serial.println(digitalRead(RIGHT_ENCODER_WHITE));
+}
+
+// Diagnostic "oscilloscope" for the encoder lines (command "encscope"): with the motors
+// stopped, sample the voltage of the encoder pins that have an ADC (GPIO 34, 35, 13) for
+// ENC_SCOPE_MS and report min / average / max in mV and the share of samples below the
+// ESP32's logic-low level. Turn a wheel by hand meanwhile. A working line swings to ~0 V.
+const unsigned long ENC_SCOPE_MS = 3000;
+const int ENC_LOW_MV = 800;
+
+void encoderScope() {
+  setMode(MODE_STOP);
+  applyMotors(0, 0);
+  const int pins[3] = {LEFT_ENCODER_BLUE, LEFT_ENCODER_WHITE, RIGHT_ENCODER_BLUE};
+  long sum[3] = {0, 0, 0};
+  int lo[3] = {9999, 9999, 9999}, hi[3] = {0, 0, 0};
+  long low[3] = {0, 0, 0}, n = 0;
+  unsigned long start = millis();
+  while (millis() - start < ENC_SCOPE_MS) {
+    for (int i = 0; i < 3; i++) {
+      int mv = analogReadMilliVolts(pins[i]);
+      sum[i] += mv;
+      lo[i] = min(lo[i], mv);
+      hi[i] = max(hi[i], mv);
+      if (mv < ENC_LOW_MV) low[i]++;
+    }
+    n++;
+  }
+  for (int i = 0; i < 3; i++) {
+    Serial.print("I,encscope GPIO");
+    Serial.print(pins[i]);
+    Serial.print(" min/avg/max mV ");
+    Serial.print(lo[i]);
+    Serial.print("/");
+    Serial.print(n ? (int)(sum[i] / n) : 0);
+    Serial.print("/");
+    Serial.print(hi[i]);
+    Serial.print(" low ");
+    Serial.print(n ? (int)(100 * low[i] / n) : 0);
+    Serial.print("% of ");
+    Serial.print(n);
+    Serial.println(" samples");
+  }
+  lastCommandMs = millis();
 }
 
 // ==================== MOTION ====================
@@ -576,11 +695,32 @@ void applyMotors(int left, int right) {
   left = constrain(left, -MAX_PWM, MAX_PWM);
   right = constrain(right, -MAX_PWM, MAX_PWM);
 
-  setMotor(LEFT_PWM_CHANNEL, LEFT_IN_A, LEFT_IN_B, LEFT_REVERSED ? -left : left);
-  setMotor(RIGHT_PWM_CHANNEL, RIGHT_IN_A, RIGHT_IN_B, RIGHT_REVERSED ? -right : right);
+  outputMotor(0, LEFT_PWM_CHANNEL, LEFT_IN_A, LEFT_IN_B, LEFT_REVERSED ? -left : left);
+  outputMotor(1, RIGHT_PWM_CHANNEL, RIGHT_IN_A, RIGHT_IN_B, RIGHT_REVERSED ? -right : right);
 
   appliedLeft = left;
   appliedRight = right;
+}
+
+// Brake after a stop: a motor that was turning and is told 0 gets both direction inputs high
+// with the enable on for BRAKE_MS (the driver shorts the motor: short brake), then is
+// released. Without it the motors free-wheel and the robot coasts ~25 deg after a spin.
+unsigned long brakeUntilMs[2] = {0, 0};
+int lastMotorPwm[2] = {0, 0};
+
+void outputMotor(int m, int channel, int inA, int inB, int pwm) {
+  unsigned long now = millis();
+  if (pwm == 0 && lastMotorPwm[m] != 0) brakeUntilMs[m] = now + BRAKE_MS;
+  if (pwm != 0) brakeUntilMs[m] = 0;
+  lastMotorPwm[m] = pwm;
+  if (pwm == 0 && brakeUntilMs[m] != 0 && (long)(brakeUntilMs[m] - now) > 0) {
+    digitalWrite(inA, HIGH);
+    digitalWrite(inB, HIGH);
+    ledcWrite(channel, MAX_PWM);
+    return;
+  }
+  brakeUntilMs[m] = 0;
+  setMotor(channel, inA, inB, pwm);
 }
 
 void setMotor(int channel, int inA, int inB, int pwm) {
@@ -611,12 +751,22 @@ void sendTelemetry() {
     Serial.println(validDistance(rightUltraFeet) ? rightUltraFeet : -1.0f, 2);
   }
 
-  if (imuOk && now - lastImuTelemetryMs >= IMU_TELEMETRY_MS) {
+  if (now - lastImuTelemetryMs >= IMU_TELEMETRY_MS) {
     lastImuTelemetryMs = now;
-    Serial.print("G,");
-    Serial.print(yawDeg, 2);
+    if (imuOk) {
+      Serial.print("G,");
+      Serial.print(yawDeg, 2);
+      Serial.print(",");
+      Serial.println(yawRateDps, 2);
+    }
+    noInterrupts();
+    long left = leftTicks;
+    long right = rightTicks;
+    interrupts();
+    Serial.print("W,");
+    Serial.print(LEFT_ENCODER_REVERSED ? -left : left);
     Serial.print(",");
-    Serial.println(yawRateDps, 2);
+    Serial.println(RIGHT_ENCODER_REVERSED ? -right : right);
   }
 
   if (now - lastStatusMs >= STATUS_MS) {

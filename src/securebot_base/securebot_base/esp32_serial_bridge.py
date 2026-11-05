@@ -98,9 +98,9 @@ class ESP32SerialBridge(Node):
     def __init__(self):
         super().__init__('esp32_serial_bridge')
 
-        # Default: the ESP32's USB socket (path 2.3). /dev/ttyUSBn numbers can swap with the
+        # Default: the ESP32's USB socket (path 2.4). /dev/ttyUSBn numbers can swap with the
         # LiDAR, which uses the same CP2102 adapter with the same serial number.
-        self.declare_parameter('port', '/dev/serial/by-path/platform-3610000.usb-usb-0:2.3:1.0-port0')
+        self.declare_parameter('port', '/dev/serial/by-path/platform-3610000.usb-usb-0:2.4:1.0-port0')
         self.declare_parameter('baudrate', 115200)
         # PWM is 10-bit duty (0-1023) at 10 kHz. The robot needs ~650 to start from standstill
         # (tuned with tools/motor_tune.py), so 650 is both the floor for any wheel that should
