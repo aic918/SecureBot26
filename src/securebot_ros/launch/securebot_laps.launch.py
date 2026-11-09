@@ -73,8 +73,14 @@ def launch_setup(context):
                           'min_pocket': float(get('min_pocket')),
                           'require_gyro': get('imu') == 'true',
                           'home': get('home')}]),
-        Node(package='securebot_ros', executable='laps_panel', output='screen'),
-    ] + auto_localize(get('auto_localize'), map_yaml)
+    ] + laps_window(get('panel')) + auto_localize(get('auto_localize'), map_yaml)
+
+
+def laps_window(panel):
+    """The "SecureBot Laps" Tk window, unless the web panel runs the robot (panel:=web)."""
+    if panel.lower() != 'true':
+        return []
+    return [Node(package='securebot_ros', executable='laps_panel', output='screen')]
 
 
 GLOBAL_LOCALIZE = os.path.expanduser('~/securebot_ws/tools/global_localize.py')
@@ -127,6 +133,9 @@ def generate_launch_description():
                                           'startup (tools/global_localize.py); false = AMCL '
                                           'starts at the map origin'),
         DeclareLaunchArgument('rviz', default_value='true'),
+        DeclareLaunchArgument('panel', default_value='true',
+                              description='the "SecureBot Laps" window; the web panel '
+                                          '(web_panel) passes panel:=web for none'),
         DeclareLaunchArgument('imu', default_value='true',
                               description='use the gyro for heading; false = LiDAR only'),
         DeclareLaunchArgument(

@@ -17,6 +17,7 @@ setup(
         (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
         (os.path.join('share', package_name, 'rviz'), glob('rviz/*.rviz')),
         (os.path.join('share', package_name, 'urdf'), glob('urdf/*.urdf')),
+        (os.path.join('share', package_name, 'web'), glob('web/*.html')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -45,6 +46,7 @@ entry_points={
         'laps_node = securebot_ros.laps_node:main',
         'laps_panel = securebot_ros.laps_panel:main',
         'heading_odom_node = securebot_ros.heading_odom_node:main',
+        'web_panel = securebot_ros.web_panel:main',
     ],
 },
 
