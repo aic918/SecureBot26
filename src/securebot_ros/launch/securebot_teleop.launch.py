@@ -22,7 +22,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 def generate_launch_description():
     arg = LaunchConfiguration
     return LaunchDescription([
-        DeclareLaunchArgument('min_pwm', default_value='650'),     # of 1023 (10-bit duty)
+        DeclareLaunchArgument('min_pwm', default_value='665'),     # of 1023 (10-bit duty)
         DeclareLaunchArgument(
             'port', default_value='/dev/serial/by-path/platform-3610000.usb-usb-0:2.4:1.0-port0',
             description='ESP32 serial port (by USB socket path)'),

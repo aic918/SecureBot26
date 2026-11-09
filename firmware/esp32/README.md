@@ -48,6 +48,9 @@ and `RIGHT_REVERSED = false`. If a wheel turns the wrong way for a positive comm
 flag at the top of the sketch instead of rewiring.
 
 ### Hardware cautions
+- **Gyro (MPU-6050) bus held after a reset:** a reset in the middle of an I2C transfer can
+  leave the MPU-6050 holding SDA low (boot reports `SDA=0`) until it loses power. At boot the
+  firmware clocks SCL up to 16 times and sends a STOP first (`imuBusRecover`), which frees it.
 - **Never put a wire on a boot-strapping pin (GPIO 0, 2, 5, 12, 15).** The right encoder's white wire
   used to be on GPIO 12; with it connected the ESP32 could not read its flash, uploads failed
   ("Failed to communicate with the flash chip") and the serial port streamed garbage. It is now on

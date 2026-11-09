@@ -22,6 +22,15 @@ from tkinter import messagebox, simpledialog, ttk
 
 from securebot_ros import room_store as rs
 
+SLAM_PROCESS = 'async_slam_tool'    # async_slam_toolbox_node, as the kernel names it (15 chars)
+
+
+def slam_running():
+    """slam_toolbox (explore / SLAM launch) is running on this machine."""
+    return subprocess.run(['pgrep', '-x', SLAM_PROCESS],
+                          capture_output=True).returncode == 0
+
+
 ZOOM_LEVELS = [(1, 8), (1, 6), (1, 4), (1, 3), (1, 2), (1, 1), (2, 1), (3, 1), (4, 1), (6, 1),
                (8, 1)]                   # (zoom, subsample): Tk scales images by whole numbers
 FIT = 5                                  # index of 1:1
@@ -89,6 +98,8 @@ class RoomManager:
                                      bg='#2da44e', fg='white', activebackground='#2c974b',
                                      command=self.save_current, pady=4)
         self.save_button.grid(row=2, column=0, columnspan=3, sticky='we', pady=(6, 0))
+        tk.Button(bar, text='Clear live map (start mapping afresh)', command=self.clear_live,
+                  pady=2).grid(row=3, column=0, columnspan=3, sticky='we', pady=(4, 0))
         self.status = tk.Label(left, text='', anchor='w', justify='left')
         self.status.pack(fill='x')
         self.status.bind('<Configure>', lambda e: self.status.config(wraplength=e.width))
@@ -266,6 +277,29 @@ class RoomManager:
                                f'{info.image_path}\n\nThis cannot be undone.',
                                icon='warning', parent=self.root):
             self.run(lambda: self.store.delete_map(info.stem), f'Deleted {info.stem}.')
+            # SLAM still holds everything scanned since the launch: saving again would bring
+            # the deleted map back (2026-11-07). Offer to clear that too.
+            if slam_running() and messagebox.askyesno(
+                    'Clear the live map too?',
+                    'SLAM is still building a map that holds everything scanned since the '
+                    'launch, including what you just deleted. Saving it later would bring that '
+                    'back.\n\nClear the live map as well and start mapping afresh?',
+                    parent=self.root):
+                self.clear_live(ask=False)
+
+    def clear_live(self, ask=True):
+        """Restart slam_toolbox (the launch respawns it): the live map starts empty."""
+        if not slam_running():
+            self.say('SLAM is not running (no explore / SLAM launch): nothing to clear.',
+                     error=True)
+            return
+        if ask and not messagebox.askyesno(
+                'Clear live map', 'Throw away the map SLAM is building now and start mapping '
+                'afresh from where the robot is?\n\nSaved maps are not touched. Keep the robot '
+                'still for a few seconds.', parent=self.root):
+            return
+        subprocess.run(['pkill', '-INT', '-x', SLAM_PROCESS], check=False)
+        self.say('Live map cleared: SLAM restarts in a few seconds with an empty map.')
 
     # --- saving the live map -------------------------------------------------------------
     def save_current(self):

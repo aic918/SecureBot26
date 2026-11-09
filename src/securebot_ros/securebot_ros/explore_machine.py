@@ -52,6 +52,13 @@ class Params:
     coverage_goal = 0.90
     coverage_period = 2.0         # s between coverage checks while driving
     min_travel = 1.0              # m driven before "room scanned" can end the run
+    open_frontier = 0.6           # m: an unseen opening this wide (the robot fits) that it can
+    #                               reach keeps it exploring, whatever the coverage says (in a
+    #                               hallway the long walls made it "91 % scanned" with both
+    #                               ends still open, 2026-11-07)
+    stale_distance = 4.0          # m: if driving this far showed less than ...
+    stale_area = 1.0              # ... this many m² of new floor, head for unexplored space
+    #                               (2026-11-07: it drove passes over scanned parts instead)
     blocked_memory = 3            # remember this many blocked headings when choosing a turn
     blocked_width = math.radians(40)
 
@@ -68,18 +75,29 @@ class ExploreMachine:
         self.blocked = []
         self.travelled = 0.0
         self.avoids = 0
+        self.open_targets = []        # (x, y) on each opening into unseen space (open frontier)
+        self.wants_frontier = False   # set when driving has stopped showing new floor
+        self.seen_log = []            # (travelled m, seen floor cells)
         self._reset_timers()
 
     # ---------------------------------------------------------------- commands
     def start(self, now):
         self.visits, self.blocked, self.coverage = ex.VisitMap(), [], None
         self.frontiers, self.target, self.travelled, self.avoids = [], None, 0.0, 0
+        self.open_targets, self.wants_frontier, self.seen_log = [], False, []
         self.last_pose = None
         self.next_coverage = now + self.p.coverage_period
         self._enter('drive', now, 'exploring')
 
     def stop(self, now, message='stopped'):
         self._enter('idle', now, message)
+
+    def resume(self, now):
+        """Carry on exploring (after a trip to unexplored space), keeping what it learnt."""
+        self.last_pose, self.wants_frontier = None, False
+        self.seen_log = self.seen_log[-1:]
+        self.next_coverage = now + self.p.coverage_period
+        self._enter('drive', now, 'exploring')
 
     @property
     def running(self):
@@ -240,10 +258,38 @@ class ExploreMachine:
         reach = ex.reachable_free(grid, x, y)
         self.coverage, clusters = ex.coverage_and_frontiers(grid, reach)
         self.frontiers = [[grid.to_world(r, c) for r, c in cl] for cl in clusters]
-        if self.travelled >= self.p.min_travel and self.coverage >= self.p.coverage_goal:
+        opening = self.open_frontiers(grid, clusters)
+        self.open_targets = []
+        for cl in opening:                            # the frontier cell nearest its middle
+            cells = np.array(cl, dtype=float)
+            k = int(np.argmin(np.hypot(*(cells - cells.mean(axis=0)).T)))
+            self.open_targets.append(grid.to_world(*cl[k]))
+        # driving that no longer shows new floor: time to head for unexplored space
+        seen = int(grid.free.sum())
+        self.seen_log.append((self.travelled, seen))
+        old = [s for d, s in self.seen_log if self.travelled - d >= self.p.stale_distance]
+        if old:
+            self.seen_log = [(d, s) for d, s in self.seen_log
+                             if self.travelled - d < self.p.stale_distance * 2]
+            gained = (seen - old[-1]) * grid.res ** 2
+            self.wants_frontier = bool(self.open_targets) and gained < self.p.stale_area
+        if self.travelled >= self.p.min_travel and self.coverage >= self.p.coverage_goal \
+                and not opening:
             self._enter('done', now, f'room scanned ({self.coverage:.0%})')
             return True
         return False
+
+    def open_frontiers(self, grid, clusters):
+        """Frontier clusters spanning at least open_frontier m: openings into unseen space
+        the robot could drive through (end of a hallway, a doorway)."""
+        out = []
+        for cl in clusters:
+            rows = [r for r, _ in cl]
+            cols = [c for _, c in cl]
+            span = math.hypot(max(rows) - min(rows) + 1, max(cols) - min(cols) + 1) * grid.res
+            if span >= self.p.open_frontier:
+                out.append(cl)
+        return out
 
     def _coverage_text(self):
         return '' if self.coverage is None else f' ({self.coverage:.0%} scanned)'

@@ -180,3 +180,43 @@ def test_stop_button():
     m.start(0.0)
     m.stop(1.0)
     assert m.state == 'idle' and m.step(1.1, (0, 0, 0), None, 1.0, 1.0, []) is None
+
+
+def _hallway(open_ends):
+    """10 m x 1.5 m hallway (5 cm cells), long walls seen; ends open (unknown) or walled."""
+    w, h = 220, 50
+    cells = np.full((h, w), -1, dtype=np.int16)
+    cells[10:40, 10:210] = 0                      # seen floor
+    cells[9, 10:210] = cells[40, 10:210] = 100    # long walls
+    if not open_ends:
+        cells[9:41, 9] = cells[9:41, 210] = 100
+    return ex.Grid(cells.ravel(), w, h, 0.05, 0.0, 0.0)
+
+
+def test_hallway_with_open_ends_is_not_done_however_high_the_coverage():
+    """2026-11-07 ENGR Hallway: the long walls made it '91 % scanned' with both ends still
+    open, and it stopped. An opening the robot fits through keeps it exploring."""
+    m = ExploreMachine()
+    m.start(0.0)
+    m.travelled = 5.0
+    g = _hallway(open_ends=True)
+    reach = ex.reachable_free(g, 5.0, 1.25)
+    cov, clusters = ex.coverage_and_frontiers(g, reach)
+    assert cov >= 0.85 and m.open_frontiers(g, clusters)
+    assert not m._update_coverage(1.0, g, 5.0, 1.25)
+    assert m._update_coverage(2.0, _hallway(open_ends=False), 5.0, 1.25)
+
+
+def test_driving_over_scanned_floor_heads_for_unexplored_space():
+    """2026-11-07: it made passes over parts already scanned. Once 4 m of driving shows almost
+    no new floor, it asks to go to an opening into unseen space (open_targets)."""
+    m = ExploreMachine()
+    m.start(0.0)
+    g = _hallway(open_ends=True)
+    for k in range(6):                                # driving, the map not growing
+        m.travelled = 1.0 + k
+        m._update_coverage(float(k), g, 5.0, 1.25)
+    assert m.wants_frontier
+    assert m.open_targets and any(x < 1.0 or x > 10.0 for x, _ in m.open_targets)
+    m.resume(10.0)
+    assert m.state == 'drive' and not m.wants_frontier and m.travelled == 6.0

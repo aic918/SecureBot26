@@ -115,3 +115,36 @@ def test_visits_along_counts_the_swept_corridor():
     assert v.along(3.0, 1.0, math.pi, 1.5, HW) == 0                   # the other way
     v.add(3.1, 1.0)                                                   # where the robot stands
     assert v.along(3.0, 1.0, math.pi, 1.5, HW) == 0
+
+
+def test_flood_fill_is_fast_on_a_big_map():
+    """2026-11-07: the Python flood fill took ~0.9 s on a 230k-cell hallway map and stalled
+    the drive loop past the motors' 0.5 s command timeout (stop / full power, over and over)."""
+    import time
+    w, h = 1500, 800
+    cells = np.zeros((h, w), dtype=np.int16)
+    cells[0, :] = cells[-1, :] = cells[:, 0] = cells[:, -1] = 100
+    cells[:, 700] = 100
+    cells[400:430, 700] = 0                         # a doorway
+    g = ex.Grid(cells.ravel(), w, h, 0.05, 0.0, 0.0)
+    t = time.monotonic()
+    reach = ex.reachable_free(g, 5.0, 5.0)
+    assert time.monotonic() - t < 0.3
+    assert reach.sum() == g.free.sum()              # both halves, through the door
+
+
+def test_plan_path_home_goes_through_the_door_and_keeps_off_walls():
+    w, h = 200, 100                                 # 10 x 5 m, wall at x = 5 m with a door
+    cells = np.zeros((h, w), dtype=np.int16)
+    cells[0, :] = cells[-1, :] = cells[:, 0] = cells[:, -1] = 100
+    cells[:, 100] = 100
+    cells[70:90, 100] = 0                           # 1 m door at y = 3.5..4.5
+    g = ex.Grid(cells.ravel(), w, h, 0.05, 0.0, 0.0)
+    path = ex.plan_path(g, (8.0, 1.0), (2.0, 1.0))
+    assert path is not None and path[0] == (8.0, 1.0) and path[-1] == (2.0, 1.0)
+    crossing = [y for (x0, y0), (x1, y) in zip(path, path[1:]) if (x0 - 5.0) * (x1 - 5.0) <= 0]
+    assert crossing and all(3.6 < y < 4.4 for y in crossing)
+    closed = cells.copy()
+    closed[70:90, 100] = 100
+    assert ex.plan_path(ex.Grid(closed.ravel(), w, h, 0.05, 0.0, 0.0),
+                        (8.0, 1.0), (2.0, 1.0)) is None

@@ -14,6 +14,7 @@
 #define OUTPUT 1
 #define INPUT_PULLDOWN 9
 #define INPUT_PULLUP 5
+#define OUTPUT_OPEN_DRAIN 0x13
 #define CHANGE 3
 #define IRAM_ATTR
 #define constrain(x, a, b) ((x) < (a) ? (a) : ((x) > (b) ? (b) : (x)))

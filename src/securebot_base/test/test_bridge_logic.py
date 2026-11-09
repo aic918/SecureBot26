@@ -63,3 +63,20 @@ def test_imu_message_heading_only():
     assert abs(2 * math.atan2(m.orientation.z, m.orientation.w) - math.pi / 2) < 1e-9
     assert m.angular_velocity.z == 0.5
     assert m.linear_acceleration_covariance[0] == -1.0
+
+
+def test_slow_requests_are_lifted_only_to_the_gentle_pwm():
+    args = (0.35, 1.5, 0.44, 660, 660, 610, 250)
+    left, right = twist_to_pwm(0.0, 0.45, *args)              # correction spin: ~190 raw
+    assert (left, right) == (-610, 610)
+    assert twist_to_pwm(0.0, 0.8, *args) == (-660, 660)       # normal turn: ~332 raw
+    assert twist_to_pwm(0.2, 0.0, *args) == (660, 660)        # driving: ~377 raw
+    assert twist_to_pwm(0.0, 0.45, *args[:5]) == (-660, 660)  # gentle band off
+
+
+def test_slow_approach_with_steering_stays_gentle():
+    args = (0.35, 1.5, 0.44, 660, 660, 610, 300)
+    left, right = twist_to_pwm(0.1, 0.2, *args)               # approach + a correction
+    assert max(abs(left), abs(right)) == 610
+    assert twist_to_pwm(0.2, 0.0, *args) == (660, 660)        # normal driving
+    assert twist_to_pwm(0.0, 0.8, *args) == (-660, 660)       # normal turn

@@ -56,6 +56,8 @@ def generate_launch_description():
     slam = Node(
         package='slam_toolbox', executable='async_slam_toolbox_node', name='slam_toolbox',
         output='screen', parameters=[arg('slam_params')],
+        # the Rooms window's "Clear live map" stops it: it comes back with an empty map
+        respawn=True, respawn_delay=1.0,
     )
 
     rviz = Node(

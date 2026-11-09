@@ -80,8 +80,8 @@ const int MAX_PWM_FREQ_HZ = 25000;
 const int PWM_BITS = 10;
 const int LEFT_PWM_CHANNEL = 1;       // LEDC channels (Arduino-ESP32 2.x API)
 const int RIGHT_PWM_CHANNEL = 0;
-const int MAX_PWM = 655;              // hard cap on any wheel PWM, every command path
-const int DEFAULT_SPEED_PWM = 650;    // legacy-command speed until "speed N" is received
+const int MAX_PWM = 665;              // hard cap on any wheel PWM, every command path
+const int DEFAULT_SPEED_PWM = 660;    // legacy-command speed until "speed N" is received
 const unsigned long BRAKE_MS = 150;   // short brake after a motor stops (see outputMotor)
 
 const unsigned long WATCHDOG_MS = 250;           // stop if no valid command this long
@@ -168,6 +168,7 @@ void outputMotor(int m, int channel, int inA, int inB, int pwm);
 void setMotor(int channel, int inA, int inB, int pwm);
 void sendTelemetry();
 void imuWireCheck(int &sda, int &scl);
+bool imuBusRecover();
 void setupImu();
 void setupEncoders();
 void encoderScope();
@@ -427,7 +428,39 @@ void imuWireCheck(int &sda, int &scl) {
   scl = digitalRead(IMU_SCL);
 }
 
+// An MPU-6050 cut off mid-transfer (the ESP32 reset while it was sending) keeps holding SDA
+// low until it gets the rest of its clock pulses; it stays powered through a reset, so only a
+// power cycle freed it (2026-11-07: "SDA=0" after some reboots). Clock SCL until SDA is
+// released (at most 16 pulses), then send a STOP. Returns true if SDA was held and is free now.
+bool imuBusRecover() {
+  pinMode(IMU_SDA, INPUT_PULLUP);
+  pinMode(IMU_SCL, INPUT_PULLUP);
+  delayMicroseconds(10);
+  if (digitalRead(IMU_SDA) == HIGH || digitalRead(IMU_SCL) == LOW) return false;
+  pinMode(IMU_SCL, OUTPUT_OPEN_DRAIN);
+  for (int i = 0; i < 16 && digitalRead(IMU_SDA) == LOW; i++) {
+    digitalWrite(IMU_SCL, LOW);
+    delayMicroseconds(5);
+    digitalWrite(IMU_SCL, HIGH);
+    delayMicroseconds(5);
+  }
+  // STOP: SDA low -> high while SCL is high
+  pinMode(IMU_SDA, OUTPUT_OPEN_DRAIN);
+  digitalWrite(IMU_SDA, LOW);
+  delayMicroseconds(5);
+  digitalWrite(IMU_SCL, HIGH);
+  delayMicroseconds(5);
+  digitalWrite(IMU_SDA, HIGH);
+  delayMicroseconds(5);
+  pinMode(IMU_SDA, INPUT_PULLUP);
+  pinMode(IMU_SCL, INPUT_PULLUP);
+  delayMicroseconds(10);
+  return digitalRead(IMU_SDA) == HIGH;
+}
+
 void setupImu() {
+  // A gyro left holding the bus by a reset: free it first (see imuBusRecover).
+  if (imuBusRecover()) Serial.println("I,imu bus freed (SDA was held low after a reset)");
   // Check the wires before starting I2C: with a wire missing the bus has no pull-up and the
   // ESP32's I2C driver can hang for good, so the board would never finish booting.
   int sda, scl;

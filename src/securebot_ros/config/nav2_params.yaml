@@ -150,7 +150,11 @@ global_costmap:
       use_sim_time: false
       resolution: 0.05
       track_unknown_space: true
-      plugins: [static_layer, obstacle_layer, inflation_layer]
+      # Humble's StaticLayer reads use_maximum from here, not per layer: without it the
+      # debris layer (all 0 but its blocks) overwrote the room's walls with "free" and Nav2
+      # planned detours through walls. With it each static layer only adds cost.
+      use_maximum: true
+      plugins: [static_layer, obstacle_layer, debris_layer, inflation_layer]
       obstacle_layer:
         plugin: nav2_costmap_2d::ObstacleLayer
         enabled: true
@@ -158,6 +162,10 @@ global_costmap:
         scan: {topic: /scan, max_obstacle_height: 2.0, clearing: true, marking: true, data_type: LaserScan,
           raytrace_max_range: 4.0, raytrace_min_range: 0.0, obstacle_max_range: 3.5, obstacle_min_range: 0.0}
       static_layer: {plugin: 'nav2_costmap_2d::StaticLayer', map_subscribe_transient_local: true}
+      # laps: blocks for things too low for the sensors, this run only (laps_node, /laps/debris_map
+      # is the room map's size, 0 = free, so it only ever adds cost; no publisher = no effect)
+      debris_layer: {plugin: 'nav2_costmap_2d::StaticLayer', map_topic: /laps/debris_map,
+        map_subscribe_transient_local: true, subscribe_to_updates: false}
       inflation_layer: {plugin: 'nav2_costmap_2d::InflationLayer', cost_scaling_factor: 3.0, inflation_radius: 0.5}
       always_send_full_costmap: true
       footprint: '[[0.2475, 0.256], [0.2475, -0.256], [-0.2475, -0.256], [-0.2475, 0.256]]'

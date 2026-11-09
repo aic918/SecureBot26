@@ -1,12 +1,15 @@
 """Let the robot explore and map the room on its own, with Start / Stop buttons.
 
   ros2 launch securebot_ros securebot_explore.launch.py
+  ros2 launch securebot_ros securebot_explore.launch.py room:="ENGR Hallway"   # + save it
 
 Starts: SLAM (LiDAR, laser odometry, slam_toolbox, RViz), the robot side in keyboard mode
 (ESP32 bridge + motion manager: no camera needed, stops when nothing is commanded), the
 explore node and the "SecureBot Explore" window. Nothing moves until you press START; STOP
 (or closing the window, or Ctrl+C here) stops it. When the room is >= 90 % scanned the robot
-stops by itself; save the map then with "Save current map as a new room..." in the
+stops by itself; with room:="<name>" the map is then saved and filed as that room (a room
+that already exists gets the new map), ready for securebot_laps.launch.py room:="<name>".
+Otherwise save the map with "Save current map as a new room..." in the
 "SecureBot Rooms" window (rooms:=false leaves that window out), or by hand:
   ros2 run nav2_map_server map_saver_cli -f maps/<name> --ros-args -p save_map_timeout:=10.0
 
@@ -32,6 +35,8 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('coverage_goal', default_value='0.9',
                               description='stop when this fraction of the room is scanned'),
+        DeclareLaunchArgument('room', default_value='',
+                              description='save the map as this room when scanned'),
         DeclareLaunchArgument('rooms', default_value='true',
                               description='also open the SecureBot Rooms window'),
         GroupAction(scoped=True, actions=[IncludeLaunchDescription(
@@ -40,7 +45,8 @@ def generate_launch_description():
             PythonLaunchDescriptionSource(launch('securebot_teleop.launch.py')))]),
         Node(package='securebot_ros', executable='explore_node', output='screen',
              parameters=[{'coverage_goal': ParameterValue(LaunchConfiguration('coverage_goal'),
-                                                          value_type=float)}]),
+                                                          value_type=float),
+                          'room': ParameterValue(LaunchConfiguration('room'), value_type=str)}]),
         Node(package='securebot_ros', executable='explore_panel', output='screen'),
         Node(package='securebot_ros', executable='room_manager', output='screen',
              condition=IfCondition(LaunchConfiguration('rooms'))),

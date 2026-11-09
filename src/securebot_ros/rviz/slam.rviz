@@ -73,6 +73,10 @@ Visualization Manager:
     Namespaces:
       frontiers: true
       heading: true
+      home: true
+      home_path: true
+      nopass: true
+      nopass_start: true
     Topic:
       Value: /explore/markers
       Depth: 5
@@ -86,6 +90,14 @@ Visualization Manager:
   Name: root
   Tools:
   - Class: rviz_default_plugins/MoveCamera
+  - Class: rviz_default_plugins/PublishPoint
+    Single click: false
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /clicked_point
   Value: true
   Views:
     Current:

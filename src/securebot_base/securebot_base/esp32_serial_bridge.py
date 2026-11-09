@@ -38,18 +38,22 @@ def clamp(value, low, high):
 
 
 def twist_to_pwm(linear, angular, max_linear_mps, max_angular_rps, wheel_base_m, max_pwm,
-                 min_pwm=0):
+                 min_pwm=0, gentle_pwm=0, gentle_below=0):
     """Differential-drive Twist -> (left_pwm, right_pwm), each clamped to +/-max_pwm.
     Below min_pwm the motors only hum, so a command whose faster wheel is under it is scaled
-    up (both wheels together, keeping their ratio and so the direction of a curve)."""
+    up (both wheels together, keeping their ratio and so the direction of a curve).
+    Gentle band: a slow request (faster wheel under `gentle_below` before lifting, e.g. the lap
+    follower's small correction spins) is lifted only to `gentle_pwm`, so corrections do not
+    jolt the robot at full power."""
     linear = clamp(linear, -max_linear_mps, max_linear_mps)
     angular = clamp(angular, -max_angular_rps, max_angular_rps)
     left = (linear - angular * wheel_base_m / 2.0) / max_linear_mps * max_pwm
     right = (linear + angular * wheel_base_m / 2.0) / max_linear_mps * max_pwm
 
     fastest = max(abs(left), abs(right))
-    if 0 < fastest < min_pwm:
-        left, right = left * min_pwm / fastest, right * min_pwm / fastest
+    floor = gentle_pwm if gentle_pwm and 0 < fastest < gentle_below else min_pwm
+    if 0 < fastest < floor:
+        left, right = left * floor / fastest, right * floor / fastest
 
     to_pwm = lambda v: int(clamp(round(v), -max_pwm, max_pwm))  # noqa: E731
     return to_pwm(left), to_pwm(right)
@@ -103,16 +107,23 @@ class ESP32SerialBridge(Node):
         self.declare_parameter('port', '/dev/serial/by-path/platform-3610000.usb-usb-0:2.4:1.0-port0')
         self.declare_parameter('baudrate', 115200)
         # PWM is 10-bit duty (0-1023) at 10 kHz. The robot needs ~650 to start from standstill
-        # (tuned with tools/motor_tune.py), so 650 is both the floor for any wheel that should
-        # turn and the ceiling: for now the robot drives at one speed and steers/stops.
-        self.declare_parameter('max_pwm', 650)
-        self.declare_parameter('min_pwm', 650)          # deadband floor for M,l,r (0 = off)
+        # (tuned with tools/motor_tune.py); 665 (2026-11-06: 670 was too fast, so 660;
+        # 2026-11-08: raised to 665) is both the floor for any wheel that should turn and the
+        # ceiling: the robot drives at one speed and steers/stops.
+        self.declare_parameter('max_pwm', 665)
+        self.declare_parameter('min_pwm', 665)          # deadband floor for M,l,r (0 = off)
+        # slow requests (correction spins) are lifted only to gentle_pwm (0 = off), see
+        # twist_to_pwm; 300 sits above a 0.45 rad/s correction spin (~190) and a slow 0.1 m/s
+        # approach with steering (~190 + up to ~85) and below a 0.8 rad/s turn (~330) or
+        # driving at 0.2 m/s (~380)
+        self.declare_parameter('gentle_pwm', 610)
+        self.declare_parameter('gentle_below', 300)
         self.declare_parameter('max_linear_mps', 0.35)
         self.declare_parameter('max_angular_rps', 1.5)
         # Drive wheels 72 mm wide, 368 mm apart inside edge to inside edge -> 440 mm centre to
         # centre (measured 2026-10-26). Wheel diameter 192 mm (used once encoders give odometry).
         self.declare_parameter('wheel_base_m', 0.44)
-        self.declare_parameter('patrol_speed', 650)     # PWM the firmware's own patrol uses
+        self.declare_parameter('patrol_speed', 665)     # PWM the firmware's own patrol uses
         self.declare_parameter('heartbeat_period', 0.1)     # firmware watchdog is 250 ms
         self.declare_parameter('command_timeout', 0.5)
         self.declare_parameter('silence_reset', 3.0)    # s without a line -> restart the ESP32
@@ -121,7 +132,8 @@ class ESP32SerialBridge(Node):
         p = lambda name: self.get_parameter(name).value  # noqa: E731
         self.port = p('port')
         self.pwm_args = (float(p('max_linear_mps')), float(p('max_angular_rps')),
-                         float(p('wheel_base_m')), int(p('max_pwm')), int(p('min_pwm')))
+                         float(p('wheel_base_m')), int(p('max_pwm')), int(p('min_pwm')),
+                         int(p('gentle_pwm')), int(p('gentle_below')))
         self.patrol_speed = int(p('patrol_speed'))
         self.timeout = float(p('command_timeout'))
         self.silence_reset = float(p('silence_reset'))

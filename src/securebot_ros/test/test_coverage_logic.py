@@ -92,20 +92,64 @@ def test_headings_follow_the_loop():
     assert len(cl.headings(loop)) == len(loop)
 
 
-def test_runner_retries_skips_and_starts_new_rounds():
+def test_runner_puts_failed_lanes_last_and_starts_new_rounds():
     m = room(4.0, 4.0)
-    r = cl.LapRunner(m, rounds=2, max_failures=2)
+    r = cl.LapRunner(m, rounds=2)
     assert r.start((0.5, 0.5))
     n = len(r.plan.loops)
-    assert r.finished(False, (0.5, 0.5)) is r.plan.loops[0]      # retried once
-    r.finished(False, (0.5, 0.5))                                 # then skipped
-    assert r.skipped == 1 and r.index == 1 % n
-    while r.round < 1:
+    first = r.current()
+    nxt = r.finished(False, (0.5, 0.5))           # not retried straight away ...
+    assert nxt is r.order[1] and r.number == 2 and len(r.order) == n + 1
+    assert r.order[-1] == r.lane_part(first)[::-1]   # ... but last, from its other end
+    while r.index < n:
         r.finished(True, (0.5, 0.5))
-    assert r.active and r.index == 0                              # round 2, planned again
+    assert r.number == 1 and r.attempt == 1
+    r.finished(False, (0.5, 0.5))                 # other end failed too, nothing new: skipped
+    assert r.skipped == 1
+    assert r.active and r.index == 0 and r.round == 1   # round 2, planned again
     for _ in range(n - 1):
         assert r.finished(True, (2.0, 2.0)) is not None
     assert r.finished(True, (2.0, 2.0)) is None and not r.active
+
+
+def test_runner_skips_only_when_every_way_was_tried():
+    """Both ends tried with the boxes known then: skipped. A new box (Nav2 finds other ways
+    round it) makes both ends worth trying again."""
+    m = room(4.0, 4.0)
+    r = cl.LapRunner(m, rounds=1)
+    assert r.start((0.5, 0.5))
+    n = len(r.plan.loops)
+    lap = r.lane_part(r.current())
+    r.finished(False, (0.5, 0.5), boxes=0)        # from end A, no boxes
+    while r.index < n:
+        r.finished(True, (0.5, 0.5))
+    assert r.order[r.index][0] == lap[-1]         # now from end B
+    r.finished(False, (0.5, 0.5), boxes=1)        # fails, but a box was found meanwhile
+    assert r.skipped == 0
+    assert r.order[r.index][0] == lap[0]          # so end A again (new way round the box)
+    r.finished(False, (0.5, 0.5), boxes=1)        # A fails too: both ends tried with 1 box
+    assert r.skipped == 1                         # every way done: now skipped
+
+
+def test_runner_safety_net():
+    m = room(4.0, 4.0)
+    r = cl.LapRunner(m, rounds=1, max_attempts=4)
+    assert r.start((0.5, 0.5))
+    boxes = 0
+    while r.active and r.skipped == 0:
+        boxes += 1                                # always something new: still capped
+        r.finished(r.number != 1, (0.5, 0.5), boxes=boxes)
+    assert r.skipped == 1
+
+
+def test_runner_retries_only_what_is_left_of_a_lane():
+    m = room(6.0, 4.0)
+    r = cl.LapRunner(m, cl.Params(pattern='lanes'), rounds=1)
+    assert r.start((0.5, 0.5))
+    a, b = r.lane_part(r.current())
+    mid = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+    r.finished(False, mid, remaining=[mid, b])
+    assert r.order[-1] == [b, mid]                # from the far end back to where it stopped
 
 
 def test_runner_nothing_to_drive():
@@ -129,3 +173,14 @@ def test_legs_cover_the_whole_loop_and_join_up():
     for a, b in zip(parts, parts[1:]):
         assert a[-1] == b[0]                                   # each leg starts where one ended
     assert cl.legs(loop[:5], 20) == [list(zip(loop[:5], cl.headings(loop[:5])))]
+
+
+def test_crosses_wall_finds_a_path_through_a_wall():
+    """Guard on Nav2's detours (run 2026-11-06 18:30 drove one through a wall)."""
+    free = np.ones((40, 40), dtype=bool)
+    free[:, 20] = False                                   # a wall at x = 1.0..1.05
+    m = cl.Map(free, 0.05, (0.0, 0.0), ~free)
+    assert cl.crosses_wall(m, [(0.5, 1.0), (1.5, 1.0)]) is not None
+    assert cl.crosses_wall(m, [(0.2, 0.2), (0.8, 1.8)]) is None
+    hit = cl.crosses_wall(m, [(0.5, 0.5), (0.9, 0.5), (1.3, 0.6)])
+    assert hit is not None and 0.95 < hit[0] < 1.1

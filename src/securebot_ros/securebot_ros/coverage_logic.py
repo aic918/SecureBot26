@@ -21,6 +21,7 @@ a wall the robot faces at a corner: closer, the firmware and the collision monit
 lane_spacing is a bit less than the robot's width so neighbouring laps overlap and leave no
 stripes.
 """
+import dataclasses
 import math
 import os
 from dataclasses import dataclass, field
@@ -42,11 +43,21 @@ class Params:
     simplify: float = 0.10         # m: straighten wiggles smaller than this (fewer waypoints)
     min_loop: float = 1.0          # m: loops shorter than this are skipped
     fill_holes: float = 0.15       # m: unseen gaps narrower than this inside count as free
-    pattern: str = 'contour'       # 'contour' laps or straight 'lanes'
+    pattern: str = 'contour'       # 'contour' laps, straight 'lanes', 'corridors' or 'auto'
     side_clearance: float = 0.50   # lanes: centre to anything beside it (turn on the spot)
     front_clearance: float = 0.60  # lanes: centre to anything ahead at a lane end (1 ft stop)
     lane_angle: float = None       # lanes: radians, None = the angle with the fewest lanes
     min_lane: float = 1.0          # lanes: shorter ones cost two turns for little floor: dropped
+    check_width: float = 1.10      # lanes: m between lanes = floor one lane checks (LiDAR)
+    fill_lanes: bool = True        # lanes: also a lane through pockets the lanes miss
+    min_pocket: float = 0.30       # m²: missed pockets smaller than this are left
+    pass_lanes: bool = True        # lanes: also a straight lane through each narrow aisle
+    pass_clearance: float = 0.36   # m centre to the sides in an aisle: follower's 0.306 + 5 cm
+    pass_reach: float = 0.30       # m a pass lane goes into the open space at each end
+    pass_slack: float = 0.04       # m closer than pass_clearance allowed along the way
+    min_aisle: float = 0.40        # m: narrow centre lines shorter than this are not aisles
+    pocket_aisles: bool = True     # lanes: also aisles ending in a small turning pocket
+    long_pocket: float = 2.0       # lanes: thinner pockets at least this long get a lane too
 
 
 @dataclass
@@ -65,6 +76,22 @@ class Map:
                 int((x - self.origin[0]) / self.resolution))
 
 
+def crosses_wall(m, pts):
+    """First (x, y) on the polyline pts that lies in a wall cell of the room map, else None.
+    A guard on paths from elsewhere (Nav2): the robot must never be sent through a wall."""
+    wall = m.wall if m.wall is not None else ~m.free
+    rows, cols = wall.shape
+    step = m.resolution / 2
+    for a, b in zip(pts, pts[1:] or pts):
+        n = max(1, int(math.ceil(math.dist(a, b) / step)))
+        for k in range(n + 1):
+            x, y = a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n
+            r, c = m.to_cell(x, y)
+            if 0 <= r < rows and 0 <= c < cols and wall[r, c]:
+                return (x, y)
+    return None
+
+
 @dataclass
 class Plan:
     loops: list                    # [[(x, y), ...]] closed (last point == first), in drive order
@@ -74,6 +101,9 @@ class Plan:
     area: float = 0.0              # m², reachable floor
     swept: np.ndarray = field(default=None, repr=False)     # bool mask of swept floor
     angle: float = None            # lanes: the lane angle used (radians)
+    mixed: bool = False            # lanes: along each corridor (angle and angle + 90 deg)
+    pattern: str = ''              # the pattern this plan used ('auto' picks one)
+    edge: int = 0                  # lanes: paths at the end for edge cases (side aisles)
 
 
 def load_map(yaml_path):
@@ -211,6 +241,29 @@ def swept_floor(m, loops, width=WIDTH, closed=True):
     return mask.astype(bool)
 
 
+def _lane_option(job):
+    """One lane_plan candidate: (cost, angle, paths, swept, length, mixed, lanes)."""
+    from securebot_ros import lane_logic as ll
+    m, p, start, angle, mixed, space, floor, extra = job
+    if mixed:
+        lane_list = ll.region_lanes(m, p, start, angle)
+    else:
+        lane_list, _ = ll.lanes(m, p, start, angle)
+    if p.fill_lanes:
+        lane_list = lane_list + ll.fill_lanes(m, p, space, ll.centre_space(m, p, start)[2],
+                                              lane_list + extra)
+    lane_list = lane_list + extra
+    paths = ll.chain(m, p, lane_list, start) if lane_list else []
+    swept = swept_floor(m, paths, width=max(WIDTH, p.check_width), closed=False) & floor
+    route = [pt for path in paths for pt in path]
+    turns, _ = ll.turn_count(route) if route else (0, 0.0)
+    length = sum(math.dist(a, b) for a, b in zip(route, route[1:]))
+    uncovered = float((floor & ~swept).sum()) * m.resolution ** 2
+    cost = (length / ll.DRIVE_MPS + turns * ll.LANE_END_S / 2 + ll.LANE_S * len(paths)
+            + ll.UNCOVERED_S_PER_M2 * uncovered)
+    return (cost, angle, paths, swept, length, mixed, lane_list)
+
+
 def lane_plan(m, p, start=None):
     """Straight-lane plan: one path per lane (the way there + the lane), in drive order.
     Without p.lane_angle, plans angles around the room's main wall direction and the one
@@ -219,39 +272,62 @@ def lane_plan(m, p, start=None):
     space, _, floor = ll.centre_space(m, p, start)
     body = cv2.dilate(space.astype(np.uint8), _disk(WIDTH / 2 / m.resolution)).astype(bool)
     floor = body & floor
+    # lanes are check_width apart and each checks that much floor (lane_spacing is the
+    # contour laps')
+    p = dataclasses.replace(p, lane_spacing=p.check_width)
+    full = p                        # with the edge cases, added after the plan is chosen
+    p = dataclasses.replace(p, pocket_aisles=False, long_pocket=math.inf)
+    extra = ll.pass_lanes(m, p, start) if p.pass_lanes else []
+    if extra:
+        passable = cv2.dilate((ll.centre_space(m, p, start)[1] >= p.pass_clearance)
+                              .astype(np.uint8), _disk(WIDTH / 2 / m.resolution)).astype(bool)
+        floor = (body | passable) & ll.centre_space(m, p, start)[2]
     if p.lane_angle is not None:
-        angles = [p.lane_angle]
+        options = [(p.lane_angle, False)]
     else:
         # the result swings with a degree or two (where lanes clip desk corners): try every
-        # degree within 3 of the walls and of the direction across them
+        # degree within 3 of the walls and of the direction across them; and (mixed) lanes
+        # along each corridor: along the walls in one part, across them in another
+        # (2026-11-07: a side corridor got ~20 short lanes straight across it)
         wall = ll.wall_angle(m)
-        angles = [(wall + base + math.radians(d)) % math.pi
-                  for base in (0.0, math.pi / 2) for d in range(-3, 4)]
+        options = [((wall + base + math.radians(d)) % math.pi, False)
+                   for base in (0.0, math.pi / 2) for d in range(-3, 4)]
+        options += [((wall + math.radians(d)) % math.pi, True) for d in (-1, 0, 1)]
+    from securebot_ros.parallel import pmap
     best = None
-    for angle in angles:
-        lane_list, _ = ll.lanes(m, p, start, angle)
-        paths = ll.chain(m, p, lane_list, start) if lane_list else []
-        swept = swept_floor(m, paths, closed=False) & floor
-        route = [pt for path in paths for pt in path]
-        turns, degrees = ll.turn_count(route) if route else (0, 0.0)
-        length = sum(math.dist(a, b) for a, b in zip(route, route[1:]))
-        uncovered = float((floor & ~swept).sum()) * m.resolution ** 2
-        cost = (length / ll.DRIVE_MPS + turns * ll.LANE_END_S / 2
-                + ll.UNCOVERED_S_PER_M2 * uncovered)
-        if best is None or cost < best[0]:
-            best = (cost, angle, paths, swept, length)
-    _, angle, paths, swept, length = best
+    for option in pmap(_lane_option, [(m, p, start, angle, mixed, space, floor, extra)
+                                      for angle, mixed in options]):
+        if best is None or option[0] < best[0]:         # the first cheapest, as before
+            best = option
+    _, angle, paths, swept, length, mixed, lane_list = best
+    # edge cases (side aisles the lanes leave out): driven after the plan as chosen, which
+    # stays exactly as it was
+    edge = ll.edge_lanes(m, full, start, lane_list)
+    n_edge = 0
+    if edge:
+        more = ll.chain(m, p, edge, paths[-1][-1] if paths else start)
+        if more:
+            paths = paths + more
+            n_edge = len(more)
+            route = [pt for path in paths for pt in path]
+            length = sum(math.dist(a, b) for a, b in zip(route, route[1:]))
+            swept = swept_floor(m, paths, width=max(WIDTH, p.check_width), closed=False) & floor
     return Plan(loops=paths, levels=[0] * len(paths), swept=swept,
                 area=float(floor.sum()) * m.resolution ** 2,
                 coverage=float(swept.sum()) / max(int(floor.sum()), 1),
-                length=length, angle=angle)
+                length=length, angle=angle, mixed=mixed, edge=n_edge)
 
 
 def plan(m, p=None, start=None):
     """Coverage plan from `start` (x, y in the map frame; None = from the first loop)."""
     p = p or Params()
+    if p.pattern == 'auto':
+        return auto_plan(m, p, start)
     if p.pattern == 'lanes':
-        return lane_plan(m, p, start)
+        return square_lanes(m, p, lane_plan(m, p, start), start)
+    if p.pattern == 'corridors':
+        from securebot_ros import route_logic as rl
+        return dataclasses.replace(rl.corridor_plan(m, p, start), pattern='corridors')
     loops, levels = order_loops(lap_loops(m, p, start), start)
     floor, _ = reachable(m, p, start)
     swept = swept_floor(m, loops) & floor
@@ -259,6 +335,49 @@ def plan(m, p=None, start=None):
     return Plan(loops=loops, levels=levels, swept=swept, area=area,
                 coverage=float(swept.sum()) / max(int(floor.sum()), 1),
                 length=sum(_loop_length(np.array(lp[:-1])) for lp in loops))
+
+
+def square_lanes(m, p, plan, start=None):
+    """Straight-lane plan with right-angle waypoints only (90 deg corners, 180 deg turns
+    back) on the lanes' own grid, an even number per lane; each lane stays its last two."""
+    from securebot_ros import route_logic as rl
+    space, _, turn = rl.route_space(m, p, start)
+    base = plan.angle if plan.angle is not None else 0.0
+    back_from = len(plan.loops) - plan.edge if plan.edge else None     # edge-case paths
+    loops, _, _ = rl.best_square(m, [turn, space], plan.loops, base, spread=0, keep_last=True,
+                                 back_from=back_from)
+    edge = plan.edge if len(loops) == len(plan.loops) else 0
+    return dataclasses.replace(plan, loops=loops, levels=[0] * len(loops), pattern='lanes',
+                               length=sum(rl._length(lp) for lp in loops), edge=edge)
+
+
+AUTO_SHARE = 0.8      # auto: corridor routes if they check at least this share of what lanes do
+
+
+def auto_plan(m, p, start=None):
+    """Corridor routes (few turns, along the corridors) unless they turn more than straight
+    lanes, or leave much more floor unchecked: then lanes (a room with desks). Both are
+    measured on the same floor, each lane checking check_width either side (LiDAR range)."""
+    from securebot_ros import route_logic as rl
+    corr = dataclasses.replace(rl.corridor_plan(m, dataclasses.replace(p, pattern='corridors'),
+                                                start), pattern='corridors')
+    lanes = square_lanes(m, p, lane_plan(m, dataclasses.replace(p, pattern='lanes'), start),
+                         start)
+    space, _, _ = rl.route_space(m, p, start)
+    floor = cv2.dilate(space.astype(np.uint8), _disk(WIDTH / 2 / m.resolution)).astype(bool) \
+        & floor_mask(m, p.fill_holes)
+    total = max(int(floor.sum()), 1)
+
+    def checked(plan):        # floor within check_width either side: what the LiDAR sees
+        return float((swept_floor(m, plan.loops, width=max(WIDTH, 2 * p.check_width),
+                                  closed=False) & floor).sum()) / total
+    # corridor routes are for fewer turns: only if they also turn no more than the lanes do
+    # (without the lanes' edge-case extras; 2026-11-07: the lab is lanes, the hallway
+    # corridors)
+    base = lanes.loops[:len(lanes.loops) - lanes.edge] if lanes.edge else lanes.loops
+    fewer = rl.square_turns(corr.loops) <= rl.square_turns(base)
+    return corr if corr.loops and fewer and checked(corr) >= AUTO_SHARE * checked(lanes) \
+        else lanes
 
 
 def headings(loop):
@@ -275,24 +394,41 @@ def legs(loop, max_poses):
     return [poses[i:i + max_poses] for i in range(0, max(len(poses) - 1, 1), step)]
 
 
-class LapRunner:
-    """Which loop to drive next. start() plans from the robot's position, then next_loop() /
-    finished() walk the loops; after the last loop of a lap round it plans again from where
-    the robot is and starts the next round, until `rounds` are done (0 = keep going)."""
+def _key(path, grid=0.1):
+    """An approach to a loop: where it starts and which way it goes from there."""
+    (x0, y0), (x1, y1) = path[0], path[1]
+    return (round(x0 / grid), round(y0 / grid),
+            round(math.degrees(math.atan2(y1 - y0, x1 - x0)) / 10) % 36)
 
-    def __init__(self, m, params=None, rounds=0, max_failures=2):
+
+class LapRunner:
+    """Which loop to drive next. start() plans from the robot's position, then current() /
+    finished() walk the loops; after the last loop of a round it plans again from where the
+    robot is and starts the next round, until `rounds` are done (0 = keep going).
+
+    A loop that fails (obstacles, no way there) is not tried again straight away: what is left
+    of it goes to the end of the round, after every other loop. It is skipped only when every
+    way to it has been tried: what is left can be started from either end (its far end, or
+    where the robot stopped), and an end counts as tried only for the boxes known at the time
+    - every new box changes the ways Nav2 finds round them, so both ends are worth another
+    go. `max_attempts` per loop is only a safety net (a doorway someone keeps standing in)."""
+
+    def __init__(self, m, params=None, rounds=0, max_attempts=10):
         self.m, self.p = m, params or Params()
-        self.rounds, self.max_failures = rounds, max_failures
+        self.rounds, self.max_attempts = rounds, max_attempts
         self.plan = None
-        self.index = 0                 # loop being driven
+        self.order, self.labels, self.tries = [], [], []   # loops to drive this round
+        self.tried = {}                # loop number -> {start point: boxes known then}
+        self.index = 0                 # into order
         self.round = 0                 # completed rounds
-        self.failures = 0              # in a row, on the current loop
         self.skipped = 0
         self.active = False
 
-    def start(self, pose):
+    def start(self, pose, plan=None):
+        """Start at round 0: drive `plan` (one already made from here, e.g. the preview) or
+        plan from `pose`."""
         self.round, self.skipped, self.active = 0, 0, True
-        self._replan(pose)
+        self._replan(pose, plan)
         if not self.plan.loops:
             self.active = False
         return self.active
@@ -300,25 +436,56 @@ class LapRunner:
     def stop(self):
         self.active = False
 
-    def _replan(self, pose):
-        self.plan = plan(self.m, self.p, pose)
-        self.index, self.failures = 0, 0
+    def _replan(self, pose, ready=None):
+        self.plan = ready if ready is not None else plan(self.m, self.p, pose)
+        self.order = [list(loop) for loop in self.plan.loops]
+        self.labels = list(range(1, len(self.order) + 1))
+        self.tries = [0] * len(self.order)
+        self.tried = {}
+        self.index = 0
 
     def current(self):
-        return self.plan.loops[self.index] if self.active else None
+        return self.order[self.index] if self.active else None
 
-    def finished(self, ok, pose):
-        """Report the current loop's result; returns the next loop or None when all are done.
-        A failed loop is tried again (max_failures in a row), then skipped."""
+    @property
+    def number(self):
+        """The current loop's number in the plan (1 = first), also on a later attempt."""
+        return self.labels[self.index] if self.order else 0
+
+    @property
+    def attempt(self):
+        """0 on a loop's first try, then 1, 2, ..."""
+        return self.tries[self.index] if self.order else 0
+
+    def lane_part(self, loop):
+        """The part of a loop that is the lap itself (lanes: the lane, without the way to it)."""
+        return [tuple(q) for q in (loop[-2:] if self.plan.pattern == 'lanes' else loop)]
+
+    def finished(self, ok, pose, remaining=None, boxes=0):
+        """Report the current loop's result (`remaining`: what is left of it, default the whole
+        lap; `boxes`: obstacle boxes known now); returns the next loop or None when all are
+        done."""
         if not self.active:
             return None
         if not ok:
-            self.failures += 1
-            if self.failures < self.max_failures:
-                return self.current()
-            self.skipped += 1
-        self.index, self.failures = self.index + 1, 0
-        if self.index >= len(self.plan.loops):
+            number, tries = self.labels[self.index], self.tries[self.index] + 1
+            lap = self.lane_part(self.order[self.index])
+            rest = [tuple(q) for q in remaining] if remaining is not None and \
+                len(remaining) >= 2 else lap
+            tried = self.tried.setdefault(number, {})
+            tried[_key(lap)] = boxes                       # how this attempt started
+            # untried ends of what is left (an end tried before more boxes were found counts
+            # as untried): its far end first, then where the robot stopped
+            ends = [rest[::-1], rest]
+            todo = [e for e in ends if tried.get(_key(e), -1) < boxes]
+            if todo and tries < self.max_attempts:
+                self.order.append(todo[0])
+                self.labels.append(number)
+                self.tries.append(tries)
+            else:
+                self.skipped += 1
+        self.index += 1
+        if self.index >= len(self.order):
             self.round += 1
             if self.rounds and self.round >= self.rounds:
                 self.active = False

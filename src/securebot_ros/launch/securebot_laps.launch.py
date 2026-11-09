@@ -6,8 +6,10 @@
 Starts: navigation on the room's saved map (LiDAR, laser odometry, AMCL, Nav2, RViz), the
 robot side in keyboard mode (ESP32 bridge + motion manager: no camera needed, stops when
 nothing is commanded), the laps node and the "SecureBot Laps" window. The room name is looked
-up in the Rooms window's list (maps/rooms.json). AMCL starts at the map's origin, i.e. where
-mapping started: put the robot there facing the same way, or use "2D Pose Estimate" in RViz.
+up in the Rooms window's list (maps/rooms.json). Once AMCL is up, the robot is found on the
+map from one LiDAR scan (auto_localize:=true, tools/global_localize.py), so it can start
+anywhere in the room; if no clear match is found, use "2D Pose Estimate" in RViz.
+auto_localize:=false: AMCL starts at the map's origin (where mapping started).
 Nothing moves until you press START; STOP (or closing the window, or Ctrl+C here) stops it.
 
 pattern:=lanes (default) drives straight parallel lanes along the room's main walls, keeping
@@ -21,8 +23,8 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription, \
-    OpaqueFunction
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, GroupAction, \
+    IncludeLaunchDescription, LogInfo, OpaqueFunction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 
@@ -67,9 +69,27 @@ def launch_setup(context):
                           'pattern': get('pattern'),
                           'side_clearance': float(get('side_clearance')),
                           'front_clearance': float(get('front_clearance')),
-                          'require_gyro': get('imu') == 'true'}]),
+                          'lane_gap': float(get('lane_gap')),
+                          'min_pocket': float(get('min_pocket')),
+                          'require_gyro': get('imu') == 'true',
+                          'home': get('home')}]),
         Node(package='securebot_ros', executable='laps_panel', output='screen'),
-    ]
+    ] + auto_localize(get('auto_localize'), map_yaml)
+
+
+GLOBAL_LOCALIZE = os.path.expanduser('~/securebot_ws/tools/global_localize.py')
+
+
+def auto_localize(enabled, map_yaml):
+    """Once AMCL is up, find the robot on the map from a LiDAR scan and send /initialpose."""
+    if enabled.lower() != 'true':
+        return []
+    if not os.path.exists(GLOBAL_LOCALIZE):
+        return [LogInfo(msg=f'auto_localize: {GLOBAL_LOCALIZE} not found; '
+                            'set the pose with "2D Pose Estimate" in RViz')]
+    return [ExecuteProcess(cmd=['python3', GLOBAL_LOCALIZE, '--map', map_yaml,
+                                '--wait', '--tries', '5'],
+                           name='global_localize', output='screen')]
 
 
 def generate_launch_description():
@@ -83,14 +103,29 @@ def generate_launch_description():
                               description='rounds of laps to drive; 0 = until Stop'),
         DeclareLaunchArgument('lane_spacing', default_value='0.45',
                               description='m between neighbouring laps (robot is 0.512 wide)'),
-        DeclareLaunchArgument('pattern', default_value='lanes',
-                              description="'lanes' (straight lanes) or 'contour' (rings)"),
+        DeclareLaunchArgument('pattern', default_value='auto',
+                              description="'auto' (corridors unless lanes check much more), "
+                                          "'corridors' (lanes along each corridor), 'lanes' "
+                                          "(straight lanes) or 'contour' (rings)"),
         DeclareLaunchArgument('wall_clearance', default_value='0.65',
                               description='contour: m from the robot centre to walls'),
         DeclareLaunchArgument('side_clearance', default_value='0.50',
                               description='lanes: m from the robot centre to anything beside it'),
         DeclareLaunchArgument('front_clearance', default_value='0.60',
                               description='lanes: m from the robot centre to a wall ahead'),
+        DeclareLaunchArgument('home', default_value='',
+                              description="'x,y' on the map: HOME for Return home "
+                                          "(default: where START is pressed)"),
+        DeclareLaunchArgument('lane_gap', default_value='2.0',
+                              description='lanes: m between lanes (fewer lanes and turns; '
+                                          'was 1.1 before 2026-11-07)'),
+        DeclareLaunchArgument('min_pocket', default_value='1.0',
+                              description='lanes: m² of missed floor worth an extra lane '
+                                          '(was 0.3)'),
+        DeclareLaunchArgument('auto_localize', default_value='true',
+                              description='find the robot on the map from a LiDAR scan at '
+                                          'startup (tools/global_localize.py); false = AMCL '
+                                          'starts at the map origin'),
         DeclareLaunchArgument('rviz', default_value='true'),
         DeclareLaunchArgument('imu', default_value='true',
                               description='use the gyro for heading; false = LiDAR only'),

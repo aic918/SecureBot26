@@ -6,6 +6,7 @@ between are treated by threshold). Cells are indexed [row, col] = [y, x].
 import math
 from collections import deque
 
+import cv2
 import numpy as np
 
 UNKNOWN, FREE, OCCUPIED = -1, 0, 100
@@ -65,16 +66,11 @@ def reachable_free(grid, x, y, search_radius=0.5):
             break
     if start is None:
         return mask
-    queue = deque([start])
-    mask[start] = True
-    while queue:
-        r, c = queue.popleft()
-        for dr, dc in NEIGHBORS4:
-            nr, nc = r + dr, c + dc
-            if grid.inside(nr, nc) and grid.free[nr, nc] and not mask[nr, nc]:
-                mask[nr, nc] = True
-                queue.append((nr, nc))
-    return mask
+    # 4-connected component of the start cell, in C (OpenCV): the Python flood fill took
+    # ~0.9 s on a 230k-cell hallway map, stalling the 10 Hz drive loop past the motors' 0.5 s
+    # command timeout every coverage check (stop / full power over and over, 2026-11-07)
+    _, labels = cv2.connectedComponents(grid.free.astype(np.uint8), connectivity=4)
+    return labels == labels[start]
 
 
 def _touches(mask, rows, cols, other):
@@ -224,3 +220,64 @@ def scan_clearance(points, heading, half_width):
     v = -points[:, 0] * s + points[:, 1] * c
     ahead = (u > 0.0) & (np.abs(v) <= half_width)
     return float(u[ahead].min()) if ahead.any() else math.inf
+
+
+def plan_path(grid, start, goal, clearance=0.30, cell=0.10, snap=1.0):
+    """Shortest drivable way [(x, y), ...] from start to goal over seen free floor, keeping the
+    robot's centre `clearance` m from walls (and preferring the middle of passages), on a
+    `cell` m grid; None if there is none. Used to drive home after exploring (no Nav2)."""
+    import heapq
+    occ = grid.occ.astype(np.uint8)
+    dist = cv2.distanceTransform((1 - occ), cv2.DIST_L2, 5) * grid.res
+    ok = grid.free & (dist >= clearance)
+    f = max(1, int(round(cell / grid.res)))
+    h, w = ok.shape[0] // f, ok.shape[1] // f
+    if h == 0 or w == 0:
+        return None
+    blk = lambda a, fn: fn(fn(a[:h * f, :w * f].reshape(h, f, w, f), axis=3), axis=1)  # noqa
+    cok = blk(ok, np.max).astype(bool)        # passable if any of its fine cells is
+    cdist = blk(np.where(ok, dist, 0.0), np.max)
+
+    def snap_to(x, y):
+        r, c = int((y - grid.oy) / (grid.res * f)), int((x - grid.ox) / (grid.res * f))
+        cand = np.argwhere(cok)
+        if len(cand) == 0:
+            return None
+        d = np.hypot(cand[:, 0] - r, cand[:, 1] - c)
+        k = int(np.argmin(d))
+        return tuple(cand[k]) if d[k] * cell <= snap else None
+
+    s, g = snap_to(*start), snap_to(*goal)
+    if s is None or g is None:
+        return None
+    steps = [(dr, dc, math.hypot(dr, dc)) for dr in (-1, 0, 1) for dc in (-1, 0, 1)
+             if dr or dc]
+    best = {s: 0.0}
+    came = {}
+    heap = [(0.0, s)]
+    while heap:
+        _, u = heapq.heappop(heap)
+        if u == g:
+            break
+        gu = best[u]
+        for dr, dc, ln in steps:
+            v = (u[0] + dr, u[1] + dc)
+            if not (0 <= v[0] < h and 0 <= v[1] < w) or not cok[v]:
+                continue
+            # (diagonal steps are fine: `clearance` already keeps the body off the walls; a
+            # no-corner-cutting rule made hallways at an angle to the grid impassable)
+            # extra cost close to walls: keeps to the middle of corridors
+            cost = gu + ln * (1.0 + 2.0 * max(0.0, 0.6 - cdist[v]))
+            if cost < best.get(v, math.inf):
+                best[v], came[v] = cost, u
+                heapq.heappush(heap, (cost + math.hypot(v[0] - g[0], v[1] - g[1]), v))
+    if g not in best:
+        return None
+    cells, v = [g], g
+    while v != s:
+        v = came[v]
+        cells.append(v)
+    cells.reverse()
+    pts = [(grid.ox + (c + 0.5) * grid.res * f, grid.oy + (r + 0.5) * grid.res * f)
+           for r, c in cells]
+    return [tuple(start)] + pts[1:-1] + [tuple(goal)]

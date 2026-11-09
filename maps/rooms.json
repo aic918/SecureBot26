@@ -3,6 +3,14 @@
     {
       "name": "Kumar's Lab",
       "map": "explore_1026_1922"
+    },
+    {
+      "name": "ENGR Hall",
+      "map": "engr_hall_1107_1645"
+    },
+    {
+      "name": "ENGR Hallway",
+      "map": "engr_hallway_1107_1853"
     }
   ]
 }

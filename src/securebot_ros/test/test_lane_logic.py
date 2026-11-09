@@ -48,7 +48,7 @@ def lane_angles(paths):
 def test_lanes_run_along_the_long_side():
     m = rooms.room(6.0, 3.0)
     p = cl.plan(m, LANES, start=(0.5, 0.5))
-    assert len(p.loops) == 6          # 2.1 m between the side clearances / 0.45 -> 5 gaps, 6 lanes
+    assert len(p.loops) == 3          # 2.0 m between the side clearances / 1.1 -> 2 gaps, 3 lanes
     for a in lane_angles(p.loops):
         assert min(a, 180 - a) < 3                          # parallel to x
 
@@ -143,3 +143,165 @@ def test_turn_count():
     square = [(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)]
     assert ll.turn_count(square)[0] == 3
     assert ll.turn_count([(0, 0), (1, 0.05), (2, 0)])[0] == 0
+
+
+def two_rooms(corridor_width, dead_end=False):
+    """Two 3 x 3 m rooms joined by a 2 m corridor `corridor_width` wide (or, with dead_end,
+    a corridor off the first room that leads nowhere)."""
+    w, h = 8.0, 3.0
+    free = np.zeros((int(h / RES), int(w / RES)), bool)
+    rows = free.shape[0]
+
+    def fill(x0, y0, x1, y1):
+        free[rows - int(y1 / RES):rows - int(y0 / RES), int(x0 / RES):int(x1 / RES)] = True
+    fill(0.05, 0.05, 3.0, 2.95)
+    if not dead_end:
+        fill(5.0, 0.05, 7.95, 2.95)
+    fill(3.0, 1.5 - corridor_width / 2, 5.0 if not dead_end else 4.8, 1.5 + corridor_width / 2)
+    return cl.Map(free, RES, (0.0, 0.0))
+
+
+def corridor_lanes(paths):
+    """Lanes (last stretch of each path) that run inside the corridor (x 3..5)."""
+    out = []
+    for path in paths:
+        (x0, y0), (x1, y1) = path[-2], path[-1]
+        if min(x0, x1) < 3.2 and max(x0, x1) > 4.8:
+            out.append(((x0, y0), (x1, y1)))
+    return out
+
+
+def test_narrow_aisle_gets_a_lane_through_its_middle():
+    m = two_rooms(0.85)
+    p = cl.plan(m, LANES, start=(1.5, 1.5))
+    lanes = corridor_lanes(p.loops)
+    assert len(lanes) == 1
+    (x0, y0), (x1, y1) = lanes[0]
+    assert abs(y0 - 1.5) < 0.08 and abs(y1 - 1.5) < 0.08      # down the middle
+    # it ends in the open rooms, where the robot can turn
+    assert min(x0, x1) < 3.0 - LANES.pass_reach + 0.06 and max(x0, x1) > 5.0 + 0.2
+
+
+def test_too_narrow_or_dead_end_aisles_get_no_lane():
+    assert not corridor_lanes(cl.plan(two_rooms(0.6), LANES, start=(1.5, 1.5)).loops)
+    assert not corridor_lanes(cl.plan(two_rooms(0.85, dead_end=True), LANES,
+                                      start=(1.5, 1.5)).loops)
+
+
+def test_wall_strips_are_not_aisles():
+    assert ll.pass_lanes(rooms.room(6.0, 4.0), LANES, start=(0.5, 0.5)) == []
+
+
+def test_fewer_lanes_than_before_but_pockets_still_get_one():
+    m = rooms.room(6.0, 4.0, box=(2.5, 1.5, 3.5, 2.5))
+    wide = cl.plan(m, LANES, start=(0.5, 0.5))
+    tight = cl.plan(m, cl.Params(pattern='lanes', check_width=0.45, fill_lanes=False,
+                                 pass_lanes=False), start=(0.5, 0.5))
+    assert len(wide.loops) < len(tight.loops)
+    space = ll.centre_space(m, LANES, (0.5, 0.5))[0]
+    seen = cl.swept_floor(m, wide.loops, width=LANES.check_width, closed=False)
+    missed = (space & ~seen).sum() * RES ** 2
+    assert missed < LANES.min_pocket
+
+
+def l_corridor():
+    """An L of 3 m wide corridors: 20 m along x, then 15 m up along y from its right end."""
+    size_x, size_y = int(24 / RES), int(20 / RES)
+    free = np.zeros((size_y, size_x), bool)
+    free[size_y - int(4 / RES):size_y - int(1 / RES), int(1 / RES):int(21 / RES)] = True
+    free[int(1 / RES):size_y - int(1 / RES), int(18 / RES):int(21 / RES)] = True
+    return cl.Map(free, RES, (0.0, 0.0))
+
+
+def test_side_corridor_gets_lanes_along_it():
+    """The corridor across the main one is driven along, not crossed by many short lanes."""
+    m = l_corridor()
+    p = cl.Params(pattern='lanes', check_width=2.0, min_pocket=1.0)
+    plan = cl.plan(m, p, (3.0, 2.5))
+    assert plan.mixed
+    route = [pt for path in plan.loops for pt in path]
+    turns, _ = ll.turn_count(route)
+    assert turns <= 16, turns         # right-angle hops between lanes (2026-11-07)
+    assert plan.coverage > 0.9
+    # long lanes up the side corridor
+    ups = [(a, b) for path in plan.loops for a, b in zip(path, path[1:])
+           if a[0] > 18 and abs(b[1] - a[1]) > 8 and abs(b[0] - a[0]) < 1.0]
+    assert ups
+
+
+def side_aisle_room():
+    """8 x 6 m room with a 6 x 2.6 m desk block 0.85 m from the left wall: a side aisle the
+    robot fits through but cannot turn in, open at both ends."""
+    m = rooms.room(8.0, 6.0)
+    r0, c0 = m.to_cell(0.85, 5.0)
+    r1, c1 = m.to_cell(3.45, 1.0)
+    m.free[r0:r1, c0:c1] = False
+    return m
+
+
+def test_edge_cases_add_lanes_and_leave_the_plan_as_it_was():
+    """2026-11-07 (Kumar's Lab side aisles): edge-case lanes come after the plan, which is
+    exactly what it was without them."""
+    m = side_aisle_room()
+    base = cl.plan(m, cl.Params(pattern='lanes', check_width=2.0, min_pocket=1.0,
+                                pocket_aisles=False, long_pocket=math.inf), (6.0, 3.0))
+    full = cl.plan(m, cl.Params(pattern='lanes', check_width=2.0, min_pocket=1.0),
+                   (6.0, 3.0))
+    assert full.loops[:len(base.loops)] == base.loops
+    assert full.edge == len(full.loops) - len(base.loops)
+
+
+def test_bent_strip_gets_one_straight_lane():
+    """2026-11-08 (Kumar's Lab): a strip whose centre line bends a little got a lane per bend
+    (0.7-1.4 m each, with turns between); now one straight lane covers it."""
+    m = rooms.room(8.0, 6.0)
+    # a strip of floor along the top wall behind a cabinet whose front steps back 0.3 m
+    # halfway: the strip's centre line has a jog
+    r0, c0 = m.to_cell(1.0, 4.8)
+    r1, c1 = m.to_cell(4.0, 4.6)
+    m.free[r0:r1, c0:c1] = False
+    r0, c0 = m.to_cell(4.0, 4.5)
+    r1, c1 = m.to_cell(7.0, 4.3)
+    m.free[r0:r1, c0:c1] = False
+    p = cl.Params(pattern='lanes', check_width=2.0, min_pocket=1.0)
+    lanes = ll.edge_lanes(m, p, (4.0, 2.0), [((0.8, 2.0), (7.2, 2.0))])
+    along = [lane for lane in lanes if min(lane[0][1], lane[1][1]) > 4.4]
+    assert 1 <= len(along) <= 2
+    assert all(math.dist(*lane) > 2.5 for lane in along)       # no short pieces
+    assert sum(abs(b[0] - a[0]) for a, b in along) > 5.5        # still the whole strip
+
+
+def test_wiggly_centre_line_becomes_one_straight_run():
+    m = rooms.room(6.0, 3.0)
+    space = np.zeros(m.free.shape, bool)
+    r0, c0 = m.to_cell(0.4, 2.0)
+    r1, c1 = m.to_cell(5.6, 1.0)
+    space[r0:r1, c0:c1] = True                                   # a 1 m wide band
+    pts = [(0.5 + 0.05 * k, 1.5 + 0.15 * math.sin(k / 6)) for k in range(100)]
+    run = ll._straight_runs(space, m, pts)
+    assert len(run) == 2 and run[0] == pts[0] and run[-1] == pts[-1]
+
+
+def test_short_bent_tail_is_absorbed_by_its_long_neighbour():
+    space = np.ones((60, 120), bool)
+    m = rooms.room(6.0, 3.0)
+    segs = [((0.5, 1.5), (4.0, 1.5)), ((4.0, 1.5), (4.6, 1.8))]
+    out = ll._absorb_short(space, m, segs, 1.0)
+    assert len(out) == 1 and out[0][0] == (0.5, 1.5) and out[0][1][0] > 4.0
+    # a tail farther off than the reach stays a lane of its own
+    far = [((0.5, 1.5), (4.0, 1.5)), ((4.0, 1.5), (4.0, 2.9))]
+    assert len(ll._absorb_short(space, m, far, 1.0)) == 2
+
+
+def test_long_thin_strip_gets_a_lane():
+    m = rooms.room(8.0, 6.0)
+    # a 1.2 m wide strip of floor along the top wall, behind a long cabinet
+    r0, c0 = m.to_cell(1.0, 4.8)
+    r1, c1 = m.to_cell(7.0, 4.6)
+    m.free[r0:r1, c0:c1] = False
+    p = cl.Params(pattern='lanes', check_width=2.0, min_pocket=1.0)
+    q = cl.dataclasses.replace(p, lane_spacing=p.check_width) if hasattr(cl, 'dataclasses') \
+        else p
+    lanes = ll.edge_lanes(m, q, (4.0, 2.0), [((0.8, 2.0), (7.2, 2.0))])
+    along = [lane for lane in lanes if min(lane[0][1], lane[1][1]) > 4.8]
+    assert along and max(math.dist(*lane) for lane in along) > 2.0

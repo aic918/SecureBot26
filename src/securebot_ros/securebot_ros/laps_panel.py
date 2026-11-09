@@ -15,7 +15,7 @@ from rclpy.node import Node
 from std_msgs.msg import String
 
 STATE_TEXT = {'idle': 'Stopped', 'running': 'Running laps', 'done': 'Done',
-              'error': 'Cannot start'}
+              'error': 'Cannot start', 'home': 'Returning home'}
 STATE_COLOR = {'done': '#1a7f37', 'error': '#cf222e', 'idle': '#57606a'}
 
 
@@ -52,9 +52,25 @@ def main(args=None):
     buttons = tk.Frame(root, padx=16)
     buttons.pack(fill='x')
     for text, cmd, bg, active in (('START', 'start', '#2da44e', '#2c974b'),
-                                  ('STOP', 'stop', '#cf222e', '#a40e26')):
+                                  ('STOP', 'stop', '#cf222e', '#a40e26'),
+                                  ('RETURN\nHOME', 'home', '#0969da', '#0550ae')):
         tk.Button(buttons, text=text, font=font, bg=bg, fg='white', activebackground=active,
                   width=8, height=2, command=lambda c=cmd: node.send(c)).pack(side='left', padx=8)
+
+    # no-pass lines: drawn with RViz's "Publish Point" tool while drawing is on
+    lines = tk.Frame(root, padx=16, pady=8)
+    lines.pack(fill='x')
+    small = ('Helvetica', 12, 'bold')
+    draw_button = tk.Button(lines, text='Draw no-pass line', font=small, width=16,
+                            command=lambda: node.send('nopass draw'))
+    draw_button.pack(side='left', padx=(8, 4))
+    tk.Button(lines, text='Undo line', font=small,
+              command=lambda: node.send('nopass undo')).pack(side='left', padx=4)
+    tk.Button(lines, text='Clear lines', font=small,
+              command=lambda: node.send('nopass clear')).pack(side='left', padx=4)
+    lines_label = tk.Label(root, text='', font=('Helvetica', 11), anchor='w', padx=24,
+                           justify='left', wraplength=440)
+    lines_label.pack(fill='x')
 
     info = tk.Frame(root, padx=16, pady=8)
     info.pack(fill='x')
@@ -83,6 +99,15 @@ def main(args=None):
                 text += f'\nThis loop: {s["remaining"]:.1f} m to go'
             plan_label.config(text=text)
             bar['value'] = 100 * (loop - 1) / loops if loops and loop else 0
+            n = s.get('nopass', 0)
+            if s.get('drawing'):
+                draw_button.config(text='Finish line', bg='#1f2328', fg='white')
+                lines_label.config(text='Drawing: in RViz pick "Publish Point" and click the '
+                                        'corners of the line. Press Finish line when done.')
+            else:
+                draw_button.config(text='Draw no-pass line', bg='#f6f8fa', fg='black')
+                lines_label.config(text=f'{n} no-pass line(s). Click a line or an orange box '
+                                        'with "Publish Point" to remove it.')
         root.after(250, refresh)
 
     def on_close():
