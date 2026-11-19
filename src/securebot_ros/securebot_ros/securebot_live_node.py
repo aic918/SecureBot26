@@ -1,14 +1,74 @@
+"""
+Live person detection and face identification for SecureBot.
+
+Pipeline per frame:
+  1. YOLO + ByteTrack find people and give each a stable track ID.
+  2. For tracked people whose identity is undecided (or due a re-check), the head
+     area of the person box is cropped from the full-resolution frame, enlarged if
+     the person is far away, and searched with dlib's CNN face detector (GPU).
+  3. Each face read (name / Unknown / Uncertain) is a vote for that track; a track is
+     decided after a streak of consistent votes (see face_logic.TrackIdentity).
+  4. /face_status: UNAUTHORIZED if anyone is a confirmed unknown, else SCANNING if
+     anyone is undecided, else AUTHORIZED (NO_PERSON when nobody is in view).
+"""
+import json
 import pickle
+import threading
+import time
 from pathlib import Path
 
 import cv2
 import face_recognition
-import numpy as np
 from ultralytics import YOLO
 
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Bool, String
+
+from securebot_ros.face_logic import (
+    AUTHORIZED, crop_scale, face_quality_ok, FaceDB, head_region, largest_face,
+    overall_status, recognized_names, SCANNING, TrackIdentity, UNAUTHORIZED, UNKNOWN,
+)
+
+# BGR colours per track state
+STATE_COLORS = {AUTHORIZED: (0, 200, 0), UNAUTHORIZED: (0, 0, 255), SCANNING: (0, 220, 255)}
+
+
+class LatestFrameGrabber:
+    """
+    Reads the camera in a background thread and keeps only the newest frame.
+
+    Processing a frame can take longer than the camera's frame interval; reading in
+    the processing loop would then hand out stale buffered frames.
+    """
+
+    def __init__(self, cap):
+        self.cap = cap
+        self.lock = threading.Lock()
+        self.frame = None
+        self.seq = 0
+        self.running = True
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def _run(self):
+        while self.running:
+            ok, frame = self.cap.read()
+            if not ok:
+                time.sleep(0.01)
+                continue
+            with self.lock:
+                self.frame = frame
+                self.seq += 1
+
+    def latest(self):
+        """Return (seq, frame); seq increases with every new frame."""
+        with self.lock:
+            return self.seq, self.frame
+
+    def stop(self):
+        self.running = False
+        self.thread.join(timeout=1.0)
 
 
 class SecureBotLiveNode(Node):
@@ -18,34 +78,58 @@ class SecureBotLiveNode(Node):
         self.person_pub = self.create_publisher(Bool, "/person_detected", 10)
         self.face_status_pub = self.create_publisher(String, "/face_status", 10)
         self.recognized_name_pub = self.create_publisher(String, "/recognized_name", 10)
+        # JSON list of {id, state, name, dist} per tracked person, for debugging/UI
+        self.face_tracks_pub = self.create_publisher(String, "/face_tracks", 10)
         # stop | patrol: the security decision; motion_manager_node turns it into wheel
         # commands and esp32_serial_bridge (the only program on the ESP32 port) sends them.
         self.motion_pub = self.create_publisher(String, "/security/motion", 10)
 
-        self.declare_parameter(
-            "encodings_file",
-            "~/yolo/securebot_face_id/encodings/authorized_faces.pkl"
-        )
-        self.declare_parameter("model_path", "~/SecureBot/yolo11n.pt")
-        self.declare_parameter("camera_index", 0)
+        params = {
+            "encodings_file": "~/yolo/securebot_face_id/encodings/authorized_faces.pkl",
+            "model_path": "~/SecureBot/yolo11n.pt",
+            "camera_index": 0,
+            # a track counts as a person once YOLO has been this confident about it
+            "yolo_confidence": 0.80,
+            # YOLO input size; 640 is more confident on distant people, 416 on groups
+            "yolo_imgsz": 416,
+            # face read distance: < tolerance (and clear of others by margin) = match,
+            # >= unknown_distance = Unknown, in between = Uncertain (no vote)
+            "face_tolerance": 0.45,
+            "face_unknown_distance": 0.55,
+            "face_margin": 0.06,
+            "vote_window": 7,
+            "votes_needed": 3,
+            "face_recheck_s": 2.0,
+            "face_detector": "cnn",
+            "face_model": "large",
+            "face_upsample": 1,
+            "face_min_size": 40,
+            "face_min_sharpness": 30.0,
+            "max_face_crops": 2,
+            "show_camera": True,
+        }
+        for name, default in params.items():
+            self.declare_parameter(name, default)
+        p = {name: self.get_parameter(name).value for name in params}
 
-        # Person detection must be 80% or higher
-        self.declare_parameter("yolo_confidence", 0.80)
-
-        self.declare_parameter("face_tolerance", 0.45)
-        self.declare_parameter("face_scale", 0.25)
-        self.declare_parameter("face_interval", 5)
-        self.declare_parameter("show_camera", True)
-
-
-        self.encodings_file = Path(self.get_parameter("encodings_file").value).expanduser()
-        self.model_path = str(Path(self.get_parameter("model_path").value).expanduser())
-        self.camera_index = self.get_parameter("camera_index").value
-        self.yolo_confidence = self.get_parameter("yolo_confidence").value
-        self.face_tolerance = self.get_parameter("face_tolerance").value
-        self.face_scale = self.get_parameter("face_scale").value
-        self.face_interval = self.get_parameter("face_interval").value
-        self.show_camera = self.get_parameter("show_camera").value
+        self.encodings_file = Path(p["encodings_file"]).expanduser()
+        self.model_path = str(Path(p["model_path"]).expanduser())
+        self.camera_index = p["camera_index"]
+        self.yolo_confidence = p["yolo_confidence"]
+        self.yolo_imgsz = p["yolo_imgsz"]
+        self.face_tolerance = p["face_tolerance"]
+        self.face_unknown_distance = p["face_unknown_distance"]
+        self.face_margin = p["face_margin"]
+        self.vote_window = p["vote_window"]
+        self.votes_needed = p["votes_needed"]
+        self.face_recheck_s = p["face_recheck_s"]
+        self.face_detector = p["face_detector"]
+        self.face_model = p["face_model"]
+        self.face_upsample = p["face_upsample"]
+        self.face_min_size = p["face_min_size"]
+        self.face_min_sharpness = p["face_min_sharpness"]
+        self.max_face_crops = p["max_face_crops"]
+        self.show_camera = p["show_camera"]
 
         self.last_motor_command = None
         self.demo_running = False
@@ -54,7 +138,7 @@ class SecureBotLiveNode(Node):
         self.model = YOLO(self.model_path)
 
         self.get_logger().info("[INFO] Loading known faces...")
-        self.known_names, self.known_encodings = self.load_known_faces()
+        self.db = self.load_known_faces()
 
         self.get_logger().info("[INFO] Opening camera...")
         self.cap = cv2.VideoCapture(self.camera_index, cv2.CAP_V4L2)
@@ -67,19 +151,35 @@ class SecureBotLiveNode(Node):
         self.cap.set(cv2.CAP_PROP_FPS, 30)
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        self.grabber = LatestFrameGrabber(self.cap)
+        self.last_seq = 0
 
-        self.frame_count = 0
-        self.last_face_results = []
+        # track id -> TrackIdentity, plus bookkeeping the logic module doesn't need
+        self.tracks = {}
+        self.track_seen = {}      # id -> last time the tracker reported it
+        self.track_face = {}      # id -> (time, (top, right, bottom, left)) last face box
+        self.confirmed_ids = set()  # ids that reached yolo_confidence at least once
+        self.track_forget_s = 3.0
+
+        self.fps_frames = 0
+        self.fps_since = time.monotonic()
 
         self.get_logger().info("SecureBot live vision node started.")
         self.get_logger().info("Controls: S=start demo, X=stop robot, Q=quit")
-        self.get_logger().info(f"Person detection threshold: {self.yolo_confidence:.2f}")
+        self.get_logger().info(
+            f"Person threshold {self.yolo_confidence:.2f}; face tolerance "
+            f"{self.face_tolerance:.2f}, unknown at {self.face_unknown_distance:.2f}, "
+            f"{self.votes_needed} votes to decide; detector {self.face_detector}")
 
-        self.timer = self.create_timer(0.03, self.process_frame)
+        self.timer = self.create_timer(0.01, self.process_frame)
 
     def send_motor_command(self, command):
-        """Publish the security decision (stop | patrol). Sent every frame, so the motion
-        manager can treat silence (this node crashed or hung) as stop."""
+        """
+        Publish the security decision (stop | patrol).
+
+        Sent every frame, so the motion manager can treat silence (this node crashed
+        or hung) as stop.
+        """
         self.motion_pub.publish(String(data=command))
         if command != self.last_motor_command:
             self.get_logger().info(f"Security motion: {command}")
@@ -88,27 +188,26 @@ class SecureBotLiveNode(Node):
     def load_known_faces(self):
         if not self.encodings_file.exists():
             raise FileNotFoundError(
-                f"Missing encodings file: {self.encodings_file}. Run enroll_faces.py first."
+                f"Missing encodings file: {self.encodings_file}. Run enroll_faces first."
             )
 
         with open(self.encodings_file, "rb") as f:
             data = pickle.load(f)
 
-        self.get_logger().info(
-            f"Loaded {len(data['encodings'])} authorized face encodings."
-        )
+        db = FaceDB(data["names"], data["encodings"])
+        counts = ", ".join(f"{n}: {len(e)}" for n, e in sorted(db.people.items()))
+        self.get_logger().info(f"Loaded {len(db)} authorized face encodings ({counts}).")
 
-        return data["names"], data["encodings"]
-
-    def publish_bool(self, publisher, value):
-        msg = Bool()
-        msg.data = bool(value)
-        publisher.publish(msg)
+        enrolled_model = data.get("meta", {}).get("model", "small")
+        if enrolled_model != self.face_model:
+            self.get_logger().warn(
+                f"Encodings were made with the '{enrolled_model}' landmark model but "
+                f"face_model is '{self.face_model}'; re-run enroll_faces or set "
+                f"face_model:={enrolled_model}, or matching will be less accurate.")
+        return db
 
     def publish_string(self, publisher, value):
-        msg = String()
-        msg.data = str(value)
-        publisher.publish(msg)
+        publisher.publish(String(data=str(value)))
 
     def draw_text_with_bg(
         self,
@@ -123,14 +222,7 @@ class SecureBotLiveNode(Node):
     ):
         font = cv2.FONT_HERSHEY_SIMPLEX
         x, y = org
-
-        (text_w, text_h), baseline = cv2.getTextSize(
-            text,
-            font,
-            font_scale,
-            thickness
-        )
-
+        (text_w, text_h), baseline = cv2.getTextSize(text, font, font_scale, thickness)
         cv2.rectangle(
             frame,
             (x - padding, y - text_h - padding),
@@ -138,246 +230,219 @@ class SecureBotLiveNode(Node):
             bg_color,
             cv2.FILLED
         )
+        cv2.putText(frame, text, (x, y), font, font_scale, text_color, thickness)
 
-        cv2.putText(
-            frame,
-            text,
-            (x, y),
-            font,
-            font_scale,
-            text_color,
-            thickness
+    # ------------------------------------------------------------------ faces
+
+    def detect_faces(self, rgb):
+        try:
+            return face_recognition.face_locations(
+                rgb, number_of_times_to_upsample=self.face_upsample, model=self.face_detector)
+        except RuntimeError as e:
+            if self.face_detector != "cnn" or "out of memory" not in str(e):
+                raise
+            self.get_logger().error(
+                "GPU out of memory in the CNN face detector; switching to HOG "
+                "(less accurate). Free GPU memory or lower face_upsample.")
+            self.face_detector = "hog"
+            return face_recognition.face_locations(
+                rgb, number_of_times_to_upsample=self.face_upsample, model="hog")
+
+    def read_face(self, frame, box):
+        """
+        Look for one face in a person's head area.
+
+        Returns (label, distance, face_box) where label is a name, Unknown or
+        Uncertain; label is None when a face was seen but was too small or blurry to
+        vote. Returns None when no face was found (person turned away, etc.).
+        face_box is (top, right, bottom, left) in frame pixels.
+        """
+        x1, y1, x2, y2 = head_region(box, frame.shape)
+        region = frame[y1:y2, x1:x2]
+        if region.size == 0:
+            return None
+        scale = crop_scale(y2 - y1, x2 - x1)
+        interp = cv2.INTER_LINEAR if scale > 1 else cv2.INTER_AREA
+        crop = cv2.resize(region, None, fx=scale, fy=scale, interpolation=interp)
+        rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+
+        locations = self.detect_faces(rgb)
+        idx = largest_face(locations)
+        if idx is None:
+            return None
+        top, right, bottom, left = locations[idx]
+        face_box = (
+            int(y1 + top / scale), int(x1 + right / scale),
+            int(y1 + bottom / scale), int(x1 + left / scale),
         )
 
-    def recognize_faces_fast(self, frame):
-        small_frame = cv2.resize(
-            frame,
-            (0, 0),
-            fx=self.face_scale,
-            fy=self.face_scale
-        )
+        # Judge size and sharpness on the camera's own pixels: enlarging a small face
+        # adds no detail, and the enlargement itself would read as blur.
+        f_top, f_right, f_bottom, f_left = face_box
+        size = min(f_right - f_left, f_bottom - f_top)
+        face_px = frame[max(0, f_top):f_bottom, max(0, f_left):f_right]
+        gray = cv2.cvtColor(face_px, cv2.COLOR_BGR2GRAY) if face_px.size else None
+        sharpness = cv2.Laplacian(gray, cv2.CV_64F).var() if gray is not None else 0.0
+        if not face_quality_ok(size, sharpness, self.face_min_size, self.face_min_sharpness):
+            return None, None, face_box
 
-        rgb_small = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+        encoding = face_recognition.face_encodings(
+            rgb, [locations[idx]], model=self.face_model)[0]
+        label, dist = self.db.match(
+            encoding, self.face_tolerance, self.face_unknown_distance, self.face_margin)
+        return label, dist, face_box
 
-        face_locations = face_recognition.face_locations(rgb_small, model="hog")
-        face_encodings = face_recognition.face_encodings(rgb_small, face_locations)
+    # ------------------------------------------------------------------ frame loop
 
-        results = []
-        inv_scale = int(round(1 / self.face_scale))
+    def track_people(self, frame, now):
+        """Run YOLO + ByteTrack; return {track_id: (x1, y1, x2, y2)} of confirmed people."""
+        # A low detector threshold lets ByteTrack keep following a person through
+        # frames where YOLO is less sure; yolo_confidence decides who counts as a person.
+        result = self.model.track(
+            frame, imgsz=self.yolo_imgsz, conf=0.25, classes=[0], persist=True,
+            tracker="bytetrack.yaml", verbose=False)[0]
+        people = {}
+        if result.boxes is None or result.boxes.id is None:
+            return people
+        for box, tid, conf in zip(result.boxes.xyxy.tolist(),
+                                  result.boxes.id.int().tolist(),
+                                  result.boxes.conf.tolist()):
+            if conf >= self.yolo_confidence:
+                self.confirmed_ids.add(tid)
+            if tid in self.confirmed_ids:
+                people[tid] = tuple(int(v) for v in box)
+                self.track_seen[tid] = now
+        return people
 
-        for (top, right, bottom, left), face_encoding in zip(face_locations, face_encodings):
-            name = "Unknown"
+    def forget_old_tracks(self, now):
+        for tid in [t for t, seen in self.track_seen.items() if now - seen > self.track_forget_s]:
+            for store in (self.tracks, self.track_seen, self.track_face):
+                store.pop(tid, None)
+            self.confirmed_ids.discard(tid)
 
-            if len(self.known_encodings) > 0:
-                distances = face_recognition.face_distance(
-                    self.known_encodings,
-                    face_encoding
-                )
-
-                best_index = np.argmin(distances)
-
-                if distances[best_index] < self.face_tolerance:
-                    name = self.known_names[best_index]
-
-            top *= inv_scale
-            right *= inv_scale
-            bottom *= inv_scale
-            left *= inv_scale
-
-            results.append((name, (top, right, bottom, left)))
-
-        return results
+    def update_identities(self, frame, people, now):
+        for tid in people:
+            if tid not in self.tracks:
+                self.tracks[tid] = TrackIdentity(
+                    self.vote_window, self.votes_needed, self.face_recheck_s)
+        due = [tid for tid in people if self.tracks[tid].needs_face(now)]
+        due.sort(key=lambda tid: self.tracks[tid].priority(now))
+        for tid in due[:self.max_face_crops]:
+            read = self.read_face(frame, people[tid])
+            if read is None:
+                continue
+            label, dist, face_box = read
+            self.track_face[tid] = (now, face_box)
+            if label is not None:
+                before = self.tracks[tid].state
+                self.tracks[tid].add(label, dist, now)
+                after = self.tracks[tid]
+                if after.state != before:
+                    who = after.name or UNKNOWN
+                    self.get_logger().info(
+                        f"Person #{tid}: {before} -> {after.state} ({who}, dist {dist:.3f})")
 
     def process_frame(self):
-        ret, frame = self.cap.read()
-
-        if not ret:
-            self.get_logger().warn("[WARN] Failed to read frame")
+        seq, frame = self.grabber.latest()
+        if frame is None or seq == self.last_seq:
             return
+        self.last_seq = seq
+        frame = frame.copy()
+        now = time.monotonic()
 
-        self.frame_count += 1
+        people = self.track_people(frame, now)
+        self.forget_old_tracks(now)
+        self.update_identities(frame, people, now)
 
-        yolo_results = self.model(frame, imgsz=416, verbose=False)[0]
-
-        person_found = False
-
-        if yolo_results.boxes is not None:
-            for box in yolo_results.boxes:
-                cls_id = int(box.cls[0].item())
-                conf = float(box.conf[0].item())
-
-                # COCO class 0 = person
-                # Only detect person if confidence is 0.80 or higher
-                if cls_id == 0 and conf >= self.yolo_confidence:
-                    person_found = True
-                    x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-
-                    if self.show_camera:
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-
-                        self.draw_text_with_bg(
-                            frame,
-                            f"person {conf:.2f}",
-                            (x1, max(25, y1 - 10)),
-                            text_color=(0, 255, 0),
-                            bg_color=(0, 0, 0),
-                            font_scale=0.6,
-                            thickness=2,
-                            padding=4
-                        )
-
-        self.publish_bool(self.person_pub, person_found)
-
-        face_status = "NO_PERSON"
-        recognized_name = "NONE"
-
-        if person_found:
-            face_status = "SCANNING"
-
-            if self.frame_count % self.face_interval == 0:
-                self.last_face_results = self.recognize_faces_fast(frame)
-
-            if len(self.last_face_results) > 0:
-                authorized_names = [
-                    name for name, _ in self.last_face_results
-                    if name != "Unknown"
-                ]
-
-                if len(authorized_names) > 0:
-                    face_status = "AUTHORIZED"
-                    recognized_name = authorized_names[0]
-                else:
-                    face_status = "UNAUTHORIZED"
-                    recognized_name = "Unknown"
-            else:
-                face_status = "SCANNING"
-                recognized_name = "NONE"
-
-        else:
-            self.last_face_results = []
-            face_status = "NO_PERSON"
-            recognized_name = "NONE"
-
+        visible = [self.tracks[tid] for tid in people]
+        face_status = overall_status(t.state for t in visible)
+        self.person_pub.publish(Bool(data=bool(people)))
         self.publish_string(self.face_status_pub, face_status)
-        self.publish_string(self.recognized_name_pub, recognized_name)
+        self.publish_string(self.recognized_name_pub, recognized_names(visible))
+        self.publish_string(self.face_tracks_pub, json.dumps([
+            {"id": tid, "state": self.tracks[tid].state, "name": self.tracks[tid].name,
+             "dist": None if self.tracks[tid].dist is None else round(self.tracks[tid].dist, 3)}
+            for tid in sorted(people)
+        ]))
 
         # ==================== MOTOR DECISION ====================
         if not self.demo_running:
             self.send_motor_command("stop")
             motor_status = "STOPPED"
+        elif face_status in (UNAUTHORIZED, SCANNING):
+            self.send_motor_command("stop")
+            motor_status = "STOP"
         else:
-            if face_status == "UNAUTHORIZED":
-                self.send_motor_command("stop")
-                motor_status = "STOP"
-            elif face_status == "SCANNING":
-                self.send_motor_command("stop")
-                motor_status = "STOP"
-            else:
-                self.send_motor_command("patrol")
-                motor_status = "PATROL"
+            self.send_motor_command("patrol")
+            motor_status = "PATROL"
+
+        self.fps_frames += 1
+        if now - self.fps_since >= 10.0:
+            fps = self.fps_frames / (now - self.fps_since)
+            self.get_logger().info(f"{fps:.1f} fps, {len(people)} people, {face_status}")
+            self.fps_frames, self.fps_since = 0, now
 
         if self.show_camera:
-            for name, (top, right, bottom, left) in self.last_face_results:
-                box_color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
+            self.draw(frame, people, now, motor_status, face_status)
 
-                cv2.rectangle(frame, (left, top), (right, bottom), box_color, 2)
+    # ------------------------------------------------------------------ display
 
-                label_bg = (0, 120, 0) if name != "Unknown" else (0, 0, 180)
-
-                cv2.rectangle(
-                    frame,
-                    (left, bottom - 34),
-                    (right, bottom),
-                    label_bg,
-                    cv2.FILLED
-                )
-
-                cv2.putText(
-                    frame,
-                    name,
-                    (left + 6, bottom - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (255, 255, 255),
-                    2
-                )
-
-            if person_found:
-                top_text = f"{motor_status} - {face_status}: {recognized_name}"
-
-                if face_status == "AUTHORIZED":
-                    text_color = (0, 255, 0)
-                elif face_status == "UNAUTHORIZED":
-                    text_color = (0, 0, 255)
-                else:
-                    text_color = (0, 255, 255)
+    def draw(self, frame, people, now, motor_status, face_status):
+        for tid, (x1, y1, x2, y2) in people.items():
+            track = self.tracks[tid]
+            color = STATE_COLORS[track.state]
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            if track.state == AUTHORIZED:
+                label = f"#{tid} {track.name}"
+            elif track.state == UNAUTHORIZED:
+                label = f"#{tid} UNKNOWN"
             else:
-                top_text = f"{motor_status} - NO PERSON"
+                label = f"#{tid} scanning"
+            if track.dist is not None and track.state != SCANNING:
+                label += f" {track.dist:.2f}"
+            self.draw_text_with_bg(frame, label, (x1 + 4, max(25, y1 - 10)),
+                                   text_color=(255, 255, 255), bg_color=color,
+                                   font_scale=0.6, thickness=2, padding=4)
+            seen = self.track_face.get(tid)
+            if seen and now - seen[0] < 1.0:
+                top, right, bottom, left = seen[1]
+                cv2.rectangle(frame, (left, top), (right, bottom), color, 1)
 
-                if self.demo_running:
-                    text_color = (0, 255, 255)
-                else:
-                    text_color = (0, 0, 255)
+        if people:
+            top_text = f"{motor_status} - {face_status}"
+            text_color = {AUTHORIZED: (0, 255, 0), UNAUTHORIZED: (0, 0, 255)}.get(
+                face_status, (0, 255, 255))
+        else:
+            top_text = f"{motor_status} - NO PERSON"
+            text_color = (0, 255, 255) if self.demo_running else (0, 0, 255)
 
-            self.draw_text_with_bg(
-                frame,
-                top_text,
-                (20, 40),
-                text_color=text_color,
-                bg_color=(0, 0, 0),
-                font_scale=0.8,
-                thickness=2,
-                padding=6
-            )
+        self.draw_text_with_bg(frame, top_text, (20, 40), text_color=text_color,
+                               font_scale=0.8, thickness=2, padding=6)
+        self.draw_text_with_bg(frame, "Controls: S=start  X=stop  Q=quit", (20, 80),
+                               text_color=(255, 255, 255), font_scale=0.65, padding=5)
 
-            control_text = "Controls: S=start  X=stop  Q=quit"
+        cv2.imshow("SecureBot Live ROS", frame)
 
-            self.draw_text_with_bg(
-                frame,
-                control_text,
-                (20, 80),
-                text_color=(255, 255, 255),
-                bg_color=(0, 0, 0),
-                font_scale=0.65,
-                thickness=2,
-                padding=5
-            )
+        key = cv2.waitKey(1) & 0xFF
 
-            threshold_text = f"Person confidence required: {self.yolo_confidence:.2f}+"
-
-            self.draw_text_with_bg(
-                frame,
-                threshold_text,
-                (20, 120),
-                text_color=(255, 255, 255),
-                bg_color=(0, 0, 0),
-                font_scale=0.6,
-                thickness=2,
-                padding=5
-            )
-
-            cv2.imshow("SecureBot Live ROS", frame)
-
-            key = cv2.waitKey(1) & 0xFF
-
-            if key == ord("s"):
-                self.demo_running = True
-                self.get_logger().info("Demo STARTED")
-            elif key == ord("x"):
-                self.demo_running = False
-                self.send_motor_command("stop")
-                self.get_logger().info("Demo STOPPED")
-            elif key == ord("q"):
-                self.get_logger().info("Quit command received")
-                self.demo_running = False
-                self.send_motor_command("stop")
-                self.cap.release()
-                cv2.destroyAllWindows()
-                raise SystemExit
+        if key == ord("s"):
+            self.demo_running = True
+            self.get_logger().info("Demo STARTED")
+        elif key == ord("x"):
+            self.demo_running = False
+            self.send_motor_command("stop")
+            self.get_logger().info("Demo STOPPED")
+        elif key == ord("q"):
+            self.get_logger().info("Quit command received")
+            self.demo_running = False
+            self.send_motor_command("stop")
+            raise SystemExit
 
     def destroy_node(self):
         self.send_motor_command("stop")
 
+        if hasattr(self, "grabber"):
+            self.grabber.stop()
         if hasattr(self, "cap") and self.cap is not None:
             self.cap.release()
 
@@ -403,4 +468,4 @@ def main(args=None):
 
 
 if __name__ == "__main__":
-    main() 
+    main()

@@ -26,8 +26,10 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 NODE_PARAMS = [
-    'model_path', 'encodings_file', 'camera_index', 'yolo_confidence',
-    'face_tolerance', 'face_scale', 'face_interval', 'show_camera',
+    'model_path', 'encodings_file', 'camera_index', 'yolo_confidence', 'yolo_imgsz',
+    'face_tolerance', 'face_unknown_distance', 'face_margin', 'vote_window',
+    'votes_needed', 'face_recheck_s', 'face_detector', 'face_model', 'face_upsample',
+    'face_min_size', 'face_min_sharpness', 'max_face_crops', 'show_camera',
 ]
 # launch argument -> esp32_serial_bridge parameter
 BRIDGE_PARAMS = {'esp32_port': 'port', 'motor_speed': 'patrol_speed'}
