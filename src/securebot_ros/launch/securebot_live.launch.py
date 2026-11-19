@@ -2,8 +2,10 @@
 
 `ros2 run securebot_ros securebot_live_node` uses the system Python, which has
 neither face_recognition nor torch/ultralytics. This launches the same node
-with the venv's Python instead, and adds the venv's bundled NVIDIA libraries
-(libcudss etc.) to LD_LIBRARY_PATH, which torch needs to import.
+with the venv's Python instead, and adds the folder holding the venv's libcudss
+to LD_LIBRARY_PATH, which torch needs to import. Only that folder: the venv also
+has pip's cuBLAS 12.9, and if that is found before the Jetson's own CUDA 12.6
+cuBLAS, torch fails on the first frame with CUBLAS_STATUS_ALLOC_FAILED.
 
 It also starts the motion chain, so only one program ever opens the ESP32 port:
   securebot_live_node --/security/motion--> motion_manager_node --/esp32/mode, /cmd_vel-->
@@ -30,6 +32,7 @@ NODE_PARAMS = [
     'face_tolerance', 'face_unknown_distance', 'face_margin', 'vote_window',
     'votes_needed', 'face_recheck_s', 'face_detector', 'face_model', 'face_upsample',
     'face_min_size', 'face_min_sharpness', 'max_face_crops', 'show_camera',
+    'debug_dir',
 ]
 # launch argument -> esp32_serial_bridge parameter
 BRIDGE_PARAMS = {'esp32_port': 'port', 'motor_speed': 'patrol_speed'}
@@ -42,10 +45,10 @@ def _start_node(context):
         raise RuntimeError(
             f'venv python not found: {python}. Create it (see README) or pass venv:=<path>.')
 
-    nvidia_libs = glob.glob(
-        os.path.join(venv, 'lib', 'python3*', 'site-packages', 'nvidia', '*', 'lib'))
+    cudss_dirs = sorted({os.path.dirname(p) for p in glob.glob(os.path.join(
+        venv, 'lib', 'python3*', 'site-packages', 'nvidia', '*', 'lib', 'libcudss.so*'))})
     ld_path = os.pathsep.join(
-        [p for p in nvidia_libs + [os.environ.get('LD_LIBRARY_PATH', '')] if p])
+        [p for p in cudss_dirs + [os.environ.get('LD_LIBRARY_PATH', '')] if p])
 
     cmd = [python, '-W', 'ignore::UserWarning', '-m', 'securebot_ros.securebot_live_node',
            '--ros-args']

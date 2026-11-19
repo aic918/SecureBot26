@@ -107,6 +107,9 @@ class SecureBotLiveNode(Node):
             "face_min_sharpness": 30.0,
             "max_face_crops": 2,
             "show_camera": True,
+            # when set, save each face read (crop) and a full frame at every status
+            # change here, to trace exactly which image caused a decision
+            "debug_dir": "",
         }
         for name, default in params.items():
             self.declare_parameter(name, default)
@@ -130,6 +133,12 @@ class SecureBotLiveNode(Node):
         self.face_min_sharpness = p["face_min_sharpness"]
         self.max_face_crops = p["max_face_crops"]
         self.show_camera = p["show_camera"]
+        self.debug_dir = None
+        if p["debug_dir"]:
+            self.debug_dir = Path(p["debug_dir"]).expanduser() / time.strftime("%Y%m%d_%H%M%S")
+            self.debug_dir.mkdir(parents=True, exist_ok=True)
+        self.debug_saved = 0
+        self.debug_last = {}  # track id -> last time a read crop was saved
 
         self.last_motor_command = None
         self.demo_running = False
@@ -333,6 +342,7 @@ class SecureBotLiveNode(Node):
                 continue
             label, dist, face_box = read
             self.track_face[tid] = (now, face_box)
+            self.save_debug_read(frame, tid, label, dist, face_box, now)
             if label is not None:
                 before = self.tracks[tid].state
                 self.tracks[tid].add(label, dist, now)
@@ -341,6 +351,47 @@ class SecureBotLiveNode(Node):
                     who = after.name or UNKNOWN
                     self.get_logger().info(
                         f"Person #{tid}: {before} -> {after.state} ({who}, dist {dist:.3f})")
+                    self.save_debug_change(frame, tid, people[tid], before, after.state)
+
+    # ------------------------------------------------------------------ debug
+
+    DEBUG_MAX_FILES = 3000
+    DEBUG_READ_INTERVAL_S = 0.3
+
+    def _debug_path(self, suffix):
+        if self.debug_dir is None or self.debug_saved >= self.DEBUG_MAX_FILES:
+            return None
+        self.debug_saved += 1
+        if self.debug_saved == self.DEBUG_MAX_FILES:
+            self.get_logger().warn(f"debug_dir: reached {self.DEBUG_MAX_FILES} files, stopping")
+        t = time.time()
+        stamp = time.strftime("%H%M%S", time.localtime(t)) + f".{int(t % 1 * 1000):03d}"
+        return str(self.debug_dir / f"{stamp}_{suffix}.jpg")
+
+    def save_debug_read(self, frame, tid, label, dist, face_box, now):
+        """Save the face (with margin) behind one read: <time>_t<id>_<label>_<dist>.jpg."""
+        if self.debug_dir is None:
+            return
+        if now - self.debug_last.get(tid, -1.0) < self.DEBUG_READ_INTERVAL_S:
+            return
+        self.debug_last[tid] = now
+        top, right, bottom, left = face_box
+        h, w = bottom - top, right - left
+        crop = frame[max(0, top - h // 2):bottom + h // 2, max(0, left - w // 2):right + w // 2]
+        result = "lowquality" if label is None else f"{label}_{dist:.2f}"
+        path = self._debug_path(f"t{tid}_{result}")
+        if path and crop.size:
+            cv2.imwrite(path, crop)
+
+    def save_debug_change(self, frame, tid, box, before, after):
+        """Save the full frame, with the person's box, when their status changes."""
+        path = self._debug_path(f"t{tid}_CHANGE_{before}-{after}")
+        if path is None:
+            return
+        marked = frame.copy()
+        x1, y1, x2, y2 = box
+        cv2.rectangle(marked, (x1, y1), (x2, y2), STATE_COLORS[after], 3)
+        cv2.imwrite(path, marked)
 
     def process_frame(self):
         seq, frame = self.grabber.latest()
@@ -439,12 +490,17 @@ class SecureBotLiveNode(Node):
             raise SystemExit
 
     def destroy_node(self):
-        self.send_motor_command("stop")
-
+        # Stop the camera thread first: if it is still inside cap.read() when the
+        # interpreter exits, the process aborts ("FATAL: exception not rethrown").
         if hasattr(self, "grabber"):
             self.grabber.stop()
         if hasattr(self, "cap") and self.cap is not None:
             self.cap.release()
+
+        # After Ctrl-C rclpy has already shut the context down and publishing fails;
+        # the motion manager then treats the silence as stop anyway.
+        if rclpy.ok():
+            self.send_motor_command("stop")
 
         cv2.destroyAllWindows()
         super().destroy_node()
