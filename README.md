@@ -45,6 +45,18 @@ source /opt/ros/humble/setup.bash && source ~/securebot_ws/install/setup.bash
 ```
 Run one launch at a time: only one program can talk to the ESP32.
 
+**Laps from a browser (web panel)**
+```bash
+~/securebot_ws/tools/securebot_panel.sh        # prints http://<robot-ip>:8080
+```
+Open the printed address on a phone or laptop on the same network. Pick the room and press
+**Power on** (starts the laps software without RViz or windows, finds the ESP32's USB port,
+finds the robot on the map, records the run in `log/laps_runs/`), then **Start**, **Stop**,
+**Go home** and **Re-localize**. The map shows the robot, the lanes, the orange boxes (tap one
+to remove it) and home; **Power off** shuts the robot software down. Ctrl+C in the panel's
+terminal stops everything. Anyone who can reach the port can drive the robot: on an untrusted
+network use `--host 127.0.0.1`. The terminal commands below still work (not at the same time).
+
 **Explore and map a room**
 ```bash
 ros2 launch securebot_ros securebot_explore.launch.py room:="ENGR Hallway"

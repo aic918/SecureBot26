@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SecureBot Panel</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --card: #ffffff; --text: #1d2125; --muted: #5e6670; --line: #dde1e6;
+    --go: #1f883d; --stop: #cf222e; --home: #3f48cc; --warn: #b35900; --off: #6e7781;
+    --robot: #0b7285; --lane: rgba(63, 72, 204, .35); --current: #e8590c; --box: #fd7e14;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1216; --card: #191d23; --text: #e6e9ed; --muted: #9aa3ad; --line: #2c323a;
+      --robot: #3bc9db; --lane: rgba(140, 150, 255, .45);
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 12px 16px;
+           border-bottom: 1px solid var(--line); background: var(--card); }
+  header h1 { font-size: 18px; margin: 0; flex: 1; }
+  .pill { padding: 4px 10px; border-radius: 999px; font-size: 13px; font-weight: 600;
+          color: #fff; background: var(--off); white-space: nowrap; }
+  main { display: grid; gap: 16px; padding: 16px; max-width: 1200px; margin: 0 auto;
+         grid-template-columns: minmax(0, 1fr); }
+  @media (min-width: 900px) { main { grid-template-columns: 340px minmax(0, 1fr); } }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+          padding: 16px; }
+  .card h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .04em;
+             color: var(--muted); margin: 0 0 12px; }
+  label { display: block; font-size: 14px; color: var(--muted); margin: 10px 0 4px; }
+  select, input { width: 100%; font-size: 16px; padding: 10px; border-radius: 8px;
+                  border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+  button { font: inherit; font-weight: 700; border: 0; border-radius: 10px; cursor: pointer;
+           color: #fff; padding: 14px; width: 100%; }
+  button:disabled { opacity: .35; cursor: not-allowed; }
+  .big { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .big button { font-size: 20px; padding: 22px 8px; }
+  .b-go { background: var(--go); } .b-stop { background: var(--stop); }
+  .b-home { background: var(--home); } .b-off { background: var(--off); }
+  .b-plain { background: transparent; color: var(--text); border: 1px solid var(--line); }
+  .row { display: flex; gap: 10px; margin-top: 10px; }
+  .msg { margin-top: 12px; font-size: 15px; min-height: 1.4em; }
+  .err { color: var(--stop); }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0;
+       font-size: 15px; }
+  dt { color: var(--muted); } dd { margin: 0; font-variant-numeric: tabular-nums; }
+  #mapwrap { position: relative; width: 100%; aspect-ratio: 4 / 3; background: var(--bg);
+             border-radius: 8px; overflow: hidden; touch-action: manipulation; }
+  canvas { width: 100%; height: 100%; display: block; }
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 13px; color: var(--muted);
+            margin-top: 8px; }
+  .sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px;
+        vertical-align: -1px; margin-right: 4px; }
+  pre { background: var(--bg); border-radius: 8px; padding: 10px; font-size: 12px;
+        max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+        margin: 0; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 14px; }
+  ul.runs { list-style: none; padding: 0; margin: 8px 0 0; font-size: 14px; }
+  ul.runs li { padding: 6px 0; border-top: 1px solid var(--line); }
+  ul.runs a { color: var(--home); margin-right: 8px; }
+  .estop { position: fixed; right: 16px; bottom: 16px; width: auto; border-radius: 999px;
+           padding: 16px 22px; font-size: 18px; box-shadow: 0 4px 16px rgba(0,0,0,.3);
+           display: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>SecureBot</h1>
+  <span id="pill" class="pill">Connecting…</span>
+</header>
+<main>
+  <div style="display:grid; gap:16px; align-content:start">
+    <section class="card" id="powercard">
+      <h2>1 · Robot software</h2>
+      <label for="room">Room</label>
+      <select id="room"></select>
+      <details style="margin-top:10px">
+        <summary>Options</summary>
+        <label for="home">Home point (x,y on the map) — blank: where you press Start</label>
+        <input id="home" placeholder="e.g. 0.18,0.04" inputmode="decimal">
+        <label for="rounds">Rounds — 0 keeps lapping until Stop</label>
+        <input id="rounds" type="number" min="0" value="0" inputmode="numeric">
+      </details>
+      <div class="row">
+        <button id="on" class="b-go">Power on</button>
+        <button id="off" class="b-off">Power off</button>
+      </div>
+      <div id="stackmsg" class="msg"></div>
+    </section>
+
+    <section class="card">
+      <h2>2 · Drive</h2>
+      <div class="big">
+        <button id="start" class="b-go">Start</button>
+        <button id="stop" class="b-stop">Stop</button>
+        <button id="gohome" class="b-home" style="grid-column: span 2">Go home</button>
+      </div>
+      <div class="row">
+        <button id="reloc" class="b-plain">Re-localize</button>
+      </div>
+      <div id="cmdmsg" class="msg"></div>
+    </section>
+
+    <section class="card">
+      <h2>Status</h2>
+      <dl>
+        <dt>Laps</dt><dd id="s-state">—</dd>
+        <dt>Doing</dt><dd id="s-msg">—</dd>
+        <dt>Round / lane</dt><dd id="s-loop">—</dd>
+        <dt>Coverage</dt><dd id="s-cov">—</dd>
+        <dt>Position</dt><dd id="s-loc">—</dd>
+        <dt>ESP32</dt><dd id="s-esp">—</dd>
+      </dl>
+    </section>
+  </div>
+
+  <div style="display:grid; gap:16px; align-content:start">
+    <section class="card">
+      <h2>Map</h2>
+      <div id="mapwrap"><canvas id="map"></canvas></div>
+      <div class="legend">
+        <span><i class="sw" style="background:var(--robot)"></i>Robot</span>
+        <span><i class="sw" style="background:var(--lane)"></i>Planned lanes</span>
+        <span><i class="sw" style="background:var(--current)"></i>Driving now</span>
+        <span><i class="sw" style="background:var(--box)"></i>Box (tap to remove)</span>
+        <span><i class="sw" style="background:var(--home)"></i>Home</span>
+      </div>
+    </section>
+    <section class="card">
+      <details>
+        <summary>Log and past runs</summary>
+        <pre id="log" style="margin-top:10px"></pre>
+        <ul class="runs" id="runs"></ul>
+      </details>
+    </section>
+  </div>
+</main>
+<button id="estop" class="estop b-stop">■ STOP</button>
+
+<script>
+const $ = id => document.getElementById(id);
+let S = null, mapImg = null, mapMeta = null, mapRoom = null, roomsShown = '';
+
+async function api(path, body) {
+  const opt = body === undefined ? {} :
+    {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)};
+  const r = await fetch(path, opt);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.ok === false) throw new Error(j.error || r.statusText);
+  return j;
+}
+
+function say(el, text, isErr) { el.textContent = text; el.className = 'msg' + (isErr ? ' err' : ''); }
+
+async function act(el, path, body) {
+  try { say(el, (await api(path, body)).message); poll(); }
+  catch (e) { say(el, e.message, true); }
+}
+
+$('on').onclick = () => act($('stackmsg'), '/api/power/on',
+  {room: $('room').value, home: $('home').value, rounds: +$('rounds').value || 0});
+$('off').onclick = () => { if (confirm('Shut the robot software down?'))
+  act($('stackmsg'), '/api/power/off', {}); };
+$('start').onclick = () => act($('cmdmsg'), '/api/command', {cmd: 'start'});
+$('stop').onclick = () => act($('cmdmsg'), '/api/command', {cmd: 'stop'});
+$('estop').onclick = () => act($('cmdmsg'), '/api/command', {cmd: 'stop'});
+$('gohome').onclick = () => act($('cmdmsg'), '/api/command', {cmd: 'home'});
+$('reloc').onclick = () => act($('cmdmsg'), '/api/relocalize', {});
+
+const PILL = {
+  off: ['Off', 'var(--off)'], starting: ['Starting…', 'var(--warn)'],
+  running: ['Ready', 'var(--go)'], stopping: ['Shutting down…', 'var(--warn)'],
+  crashed: ['Stopped unexpectedly', 'var(--stop)'],
+};
+const LAPS = {idle: 'Stopped', running: 'Running laps', home: 'Going home', done: 'Done',
+              error: 'Cannot start', relocalize: 'Finding itself on the map'};
+
+function render() {
+  const st = S.stack.state, on = st === 'running';
+  const [txt, col] = PILL[st] || [st, 'var(--off)'];
+  const lapsState = S.laps && S.laps.state;
+  $('pill').textContent = on && lapsState ? (LAPS[lapsState] || lapsState) : txt;
+  $('pill').style.background = on && lapsState === 'error' ? 'var(--stop)' :
+    on && (lapsState === 'running' || lapsState === 'home') ? 'var(--home)' : col;
+
+  const names = S.rooms.join('\n');
+  if (names !== roomsShown) {
+    const keep = $('room').value;
+    $('room').innerHTML = '';
+    for (const n of S.rooms) $('room').add(new Option(n, n));
+    if (S.rooms.includes(keep)) $('room').value = keep;
+    roomsShown = names;
+  }
+  const busy = st === 'starting' || st === 'running' || st === 'stopping';
+  if (busy && S.stack.room) $('room').value = S.stack.room;
+  $('room').disabled = $('home').disabled = $('rounds').disabled = busy;
+  $('on').disabled = busy;
+  $('off').disabled = !busy;
+  if (st !== 'off' || !$('stackmsg').textContent) say($('stackmsg'), S.stack.message || '',
+    st === 'crashed');
+  if (st === 'off' && !S.port) say($('stackmsg'),
+    'ESP32 not found: check that the ESP32 and LiDAR USB cables are plugged in', true);
+
+  const ready = on && S.connected;
+  $('start').disabled = $('gohome').disabled = !ready;
+  $('stop').disabled = !(st === 'running' || st === 'starting');
+  $('reloc').disabled = !ready || S.localization.busy;
+  $('estop').style.display = ready && (lapsState === 'running' || lapsState === 'home')
+    ? 'block' : 'none';
+
+  const L = S.laps;
+  $('s-state').textContent = L ? (LAPS[L.state] || L.state) : (busy ? 'Waiting for the robot…' : '—');
+  $('s-msg').textContent = L ? L.message || '—' : '—';
+  $('s-loop').textContent = L && L.loops ? `round ${L.round || '–'}, lane ${L.loop || '–'} of ${L.loops}` : '—';
+  $('s-cov').textContent = L && L.coverage != null ?
+    `${Math.round(L.coverage * 100)}% of the floor, ${(L.length || 0).toFixed(0)} m per round` : '—';
+  const loc = S.localization;
+  $('s-loc').textContent = (loc.text || (S.pose ? 'On the map' : '—')) +
+    (S.pose ? `  (${S.pose[0].toFixed(2)}, ${S.pose[1].toFixed(2)})` : '');
+  $('s-loc').style.color = loc.state === 'failed' ? 'var(--stop)' : '';
+  $('s-esp').textContent = S.esp32 || (busy ? '—' : 'off');
+  $('log').textContent = (S.stack.log || []).join('\n') || 'No log yet.';
+
+  const room = S.stack.room || $('room').value;
+  if (room && room !== mapRoom) loadMap(room);
+  draw();
+}
+
+async function loadMap(room) {
+  mapRoom = room;
+  try {
+    mapMeta = await api('/api/map?room=' + encodeURIComponent(room));
+    const img = new Image();
+    img.onload = () => { mapImg = img; draw(); };
+    img.src = '/api/map.png?room=' + encodeURIComponent(room);
+  } catch (e) { mapImg = mapMeta = null; }
+}
+$('room').onchange = () => { if (S && S.stack.state === 'off') loadMap($('room').value); };
+
+// map: fit the map image into the canvas; world (x, y) <-> canvas pixels
+let view = null;
+function draw() {
+  const c = $('map'), w = c.clientWidth, h = c.clientHeight, dpr = devicePixelRatio || 1;
+  if (c.width !== w * dpr || c.height !== h * dpr) { c.width = w * dpr; c.height = h * dpr; }
+  const g = c.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, w, h);
+  if (!mapImg || !mapMeta) {
+    g.fillStyle = getComputedStyle(document.body).color;
+    g.fillText('No map', 12, 20);
+    return;
+  }
+  const s = Math.min(w / mapMeta.width, h / mapMeta.height);
+  const ox = (w - mapMeta.width * s) / 2, oy = (h - mapMeta.height * s) / 2;
+  const r = mapMeta.resolution, [mx, my] = mapMeta.origin;
+  view = {s, ox, oy, r, mx, my, H: mapMeta.height};
+  g.imageSmoothingEnabled = false;
+  g.drawImage(mapImg, ox, oy, mapMeta.width * s, mapMeta.height * s);
+  const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const P = (x, y) => [ox + (x - mx) / r * s, oy + (mapMeta.height - (y - my) / r) * s];
+  const m2px = d => d / r * s;
+  if (!S) return;
+  const line = (pts, color, width) => {
+    if (!pts || pts.length < 2) return;
+    g.strokeStyle = color; g.lineWidth = width; g.lineJoin = g.lineCap = 'round';
+    g.beginPath();
+    pts.forEach(([x, y], i) => { const [u, v] = P(x, y); i ? g.lineTo(u, v) : g.moveTo(u, v); });
+    g.stroke();
+  };
+  line(S.path, css('--lane'), Math.max(2, m2px(0.08)));
+  line(S.current, css('--current'), Math.max(2, m2px(0.05)));
+  if (S.home) {
+    const [u, v] = P(...S.home);
+    g.fillStyle = css('--home');
+    g.beginPath(); g.arc(u, v, Math.max(6, m2px(0.23)), 0, 7); g.fill();
+    g.fillStyle = '#fff'; g.font = 'bold 10px system-ui'; g.textAlign = 'center';
+    g.fillText('H', u, v + 3.5);
+  }
+  for (const [x, y, size] of S.boxes || []) {
+    const [u, v] = P(x, y), d = Math.max(6, m2px(size));
+    g.fillStyle = css('--box'); g.fillRect(u - d / 2, v - d / 2, d, d);
+  }
+  if (S.pose) {
+    const [x, y, a] = S.pose, [u, v] = P(x, y), rad = Math.max(7, m2px(0.26));
+    g.fillStyle = css('--robot');
+    g.beginPath(); g.arc(u, v, rad, 0, 7); g.fill();
+    g.strokeStyle = '#fff'; g.lineWidth = 2;
+    g.beginPath(); g.moveTo(u, v); g.lineTo(u + Math.cos(a) * rad * 1.4, v - Math.sin(a) * rad * 1.4);
+    g.stroke();
+  }
+}
+addEventListener('resize', draw);
+
+$('map').addEventListener('click', ev => {
+  if (!view || !S || !S.boxes || !S.boxes.length) return;
+  const b = ev.target.getBoundingClientRect();
+  const u = ev.clientX - b.left, v = ev.clientY - b.top;
+  const x = view.mx + (u - view.ox) / view.s * view.r;
+  const y = view.my + (view.H - (v - view.oy) / view.s) * view.r;
+  const near = S.boxes.find(([bx, by, size]) => Math.hypot(bx - x, by - y) < size / 2 + 0.3);
+  if (near && confirm('Remove this orange box?'))
+    act($('cmdmsg'), '/api/click', {x: near[0], y: near[1]});
+});
+
+async function poll() {
+  try {
+    S = await api('/api/state');
+    render();
+  } catch (e) {
+    $('pill').textContent = 'Panel not reachable';
+    $('pill').style.background = 'var(--stop)';
+  }
+}
+async function runs() {
+  try {
+    const list = await api('/api/runs');
+    $('runs').innerHTML = '';
+    for (const r of list) {
+      const li = document.createElement('li');
+      li.append(r.name + ' — ' + new Date(r.time * 1000).toLocaleString() + ' ');
+      for (const f of r.files) {
+        const a = document.createElement('a');
+        a.href = '/api/log?file=' + encodeURIComponent(f); a.target = '_blank';
+        a.textContent = f.split('_')[0];
+        li.append(a);
+      }
+      $('runs').append(li);
+    }
+  } catch (e) {}
+}
+poll(); runs();
+setInterval(poll, 500);
+setInterval(runs, 15000);
+</script>
+</body>
+</html>
