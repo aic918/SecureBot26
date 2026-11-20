@@ -13,8 +13,14 @@ view are ignored. For someone not enrolled yet, a photo is only saved when exact
 one face is in view. Afterwards, check the photos and re-run enroll_faces.
 
   python -m securebot_ros.capture_faces --name alexis
+
+The web panel runs it with --out-dir (a staging folder, reviewed before anything is
+enrolled), --no-window, --preview (latest camera view as a JPEG) and --status (progress
+as JSON), and stops it with Ctrl+C (SIGINT), which releases the camera.
 """
 import argparse
+import json
+import os
 import pickle
 import time
 from pathlib import Path
@@ -78,6 +84,14 @@ def padded_crop(frame, box, pad=0.8):
     return frame[y1:y2, x1:x2]
 
 
+def write_atomic(path, data):
+    """Write bytes so a reader never sees a half-written file."""
+    tmp = f"{path}.tmp"
+    with open(tmp, "wb") as f:
+        f.write(data)
+    os.replace(tmp, path)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -95,9 +109,13 @@ def main():
     parser.add_argument("--max-dist", type=float, default=0.42,
                         help="enrolled person: only save faces at most this far from them")
     parser.add_argument("--no-window", action="store_true")
+    parser.add_argument("--out-dir", type=Path,
+                        help="save here instead of <faces-dir>/<name> (the panel's staging)")
+    parser.add_argument("--preview", type=Path, help="keep the latest camera view here (JPEG)")
+    parser.add_argument("--status", type=Path, help="keep progress here (JSON)")
     args = parser.parse_args()
 
-    out_dir = args.faces_dir.expanduser() / args.name
+    out_dir = (args.out_dir or args.faces_dir / args.name).expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
 
     db = None
@@ -108,9 +126,23 @@ def main():
         if args.name not in db.people:
             print(f"[INFO] {args.name} is not enrolled yet; distances will show as n/a")
 
-    cap = open_camera(args.camera)
     saved = []
+    status = hint = "Starting the camera"
+
+    def report(done=False, error=None):
+        if args.status:
+            write_atomic(args.status, json.dumps({
+                "saved": len(saved), "count": args.count, "status": status, "hint": hint,
+                "done": done, "error": error}).encode())
+
+    report()
+    try:
+        cap = open_camera(args.camera)
+    except RuntimeError as e:
+        report(done=True, error=str(e))
+        raise SystemExit(f"[ERROR] {e}")
     last_save = 0.0
+    last_preview = 0.0
     stamp = time.strftime("%Y%m%d_%H%M%S")
     print(f"[INFO] Saving up to {args.count} photos to {out_dir}. Turn your head slowly: "
           "left, right, up, down, and step closer/farther. Q to quit.")
@@ -123,6 +155,7 @@ def main():
             shown = frame.copy()
             box, enc, dist = pick_face(frame, find_faces(frame), db, args.name)
             status = dist if box is None else ""
+            hint = "Look at the camera" if box is None and dist == "no face" else status
             if box is not None:
                 top, right, bottom, left = box
                 size = min(right - left, bottom - top)
@@ -132,9 +165,13 @@ def main():
                 dist_txt = "n/a" if dist is None else f"{dist:.2f}"
                 status = f"dist {dist_txt} size {size} sharp {sharp:.0f} new {novelty:.2f}"
                 good = size >= args.min_size and sharp >= args.min_sharpness
+                hint = ("Come closer" if size < args.min_size else
+                        "Too blurry - hold still" if sharp < args.min_sharpness else
+                        "Turn your head a little" if novelty < args.novelty else "Good")
                 if dist is not None and dist > args.max_dist:
                     good = False
                     status += f" - not {args.name}?"
+                    hint = f"This doesn't look like {args.name}"
                 due = time.monotonic() - last_save > args.min_gap
                 if good and novelty >= args.novelty and due:
                     path = out_dir / f"cam_{stamp}_{len(saved) + 1:02d}.jpg"
@@ -150,9 +187,20 @@ def main():
                 cv2.imshow("SecureBot face capture", shown)
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
+            if args.preview and time.monotonic() - last_preview > 0.2:
+                small = cv2.resize(shown, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA)
+                ok, jpg = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 75])
+                if ok:
+                    write_atomic(args.preview, jpg.tobytes())
+                last_preview = time.monotonic()
+                report()
+    except KeyboardInterrupt:
+        status = hint = "Stopped"
     finally:
         cap.release()
-        cv2.destroyAllWindows()
+        if not args.no_window:
+            cv2.destroyAllWindows()
+        report(done=True)
 
     print(f"[DONE] Saved {len(saved)} photos to {out_dir}. Now re-run: "
           "python -m securebot_ros.enroll_faces")

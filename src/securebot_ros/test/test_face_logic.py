@@ -1,7 +1,8 @@
 import numpy as np
 from securebot_ros.face_logic import (
     AUTHORIZED, box_iou, crop_scale, face_quality_ok, FaceDB, head_region, largest_face,
-    NO_PERSON, overall_status, own_face, recognized_names, SCANNING, touches_edge,
+    NO_PERSON, overall_status, own_face, recognized_names, review_photos, SCANNING,
+    touches_edge,
     TrackIdentity, UNAUTHORIZED, UNCERTAIN, UNKNOWN,
 )
 
@@ -217,3 +218,46 @@ def test_own_face_is_none_when_the_face_is_inside_someone_elses_box():
 def test_own_face_with_others_nearby_but_not_overlapping():
     faces = [(80, 280, 200, 180)]
     assert own_face(faces, (100, 0, 400, 700), [(600, 0, 900, 700)]) == 0
+
+
+# ---- reviewing new enrollment photos ----
+
+def photo(name, *head, note=""):
+    return {"file": name, "encoding": None if head == (None,) else enc(*head), "note": note}
+
+
+def test_review_keeps_a_consistent_set_far_from_everyone():
+    photos = [photo(f"{i}.jpg", 3.0, 0.05 * i) for i in range(5)]
+    out = review_photos(photos, "dan", {"alexis": [enc(0.0)]})
+    assert all(p["keep"] for p in out) and out[0]["closest"] == ["alexis", 3.0]
+
+
+def test_review_unchecks_photos_that_look_like_someone_else():
+    photos = [photo(f"{i}.jpg", 3.0, 0.05 * i) for i in range(4)] + [photo("x.jpg", 0.4)]
+    out = review_photos(photos, "dan", {"balde": [enc(0.0)]}, rest_max=9.0)
+    assert not out[-1]["keep"] and out[-1]["reasons"] == ["looks like balde (0.40)"]
+    assert all(p["keep"] for p in out[:-1])
+
+
+def test_review_only_notes_someone_close_but_not_too_close():
+    out = review_photos([photo("a.jpg", 0.52)], "dan", {"alexis": [enc(0.0)]})
+    assert out[0]["keep"] and out[0]["notes"] == ["close to alexis (0.52)"]
+
+
+def test_review_unchecks_the_odd_one_out():
+    photos = [photo(f"{i}.jpg", 3.0, 0.05 * i) for i in range(5)] + [photo("side.jpg", 3.0, 1.0)]
+    out = review_photos(photos, "dan", {})
+    assert not out[-1]["keep"] and out[-1]["reasons"][0].startswith("unlike the other photos")
+    assert all(p["keep"] for p in out[:-1])
+
+
+def test_review_of_an_enrolled_person_checks_their_own_photos():
+    photos = [photo("me.jpg", 0.1), photo("other.jpg", 2.0)]
+    out = review_photos(photos, "alexis", {}, own=[enc(0.0)])
+    assert out[0]["keep"] and out[0]["own"] == 0.1
+    assert not out[1]["keep"] and "doesn't match alexis" in out[1]["reasons"][0]
+
+
+def test_review_unchecks_photos_without_a_face():
+    out = review_photos([photo("blank.jpg", None)], "dan", {})
+    assert out[0]["reasons"] == ["no face found"] and not out[0]["keep"]

@@ -14,6 +14,7 @@ import cv2
 import pytest
 
 from securebot_ros import web_logic as wl
+from securebot_ros.web_faces import FaceEnroller
 
 LIDAR = wl.LIDAR_PORT
 ESP = '/dev/serial/by-path/platform-3610000.usb-usb-0:2.3:1.0-port0'
@@ -105,9 +106,12 @@ class FakeBridge:
 
 def app_for(tmp_path, maps, fos, ports=(LIDAR, ESP), ps=''):
     bridge = FakeBridge()
+    faces = FaceEnroller(base=str(tmp_path / 'faces'), venv=str(tmp_path / 'venv'),
+                         popen=fos.popen, killpg=fos.killpg, ps=lambda: ps)
     app = wl.PanelApp(bridge, stack=stack_for(tmp_path, fos), maps_dir=maps,
                       runs_dir=str(tmp_path / 'runs'), tools_dir=str(tmp_path / 'tools'),
-                      ports=lambda: list(ports), ps=lambda: ps, spawn=lambda f: f())
+                      ports=lambda: list(ports), ps=lambda: ps, spawn=lambda f: f(),
+                      faces=faces)
     return app, bridge
 
 
@@ -425,17 +429,51 @@ def test_http_logs_only_from_the_runs_folder(server, tmp_path):
     assert code == 200 and json.loads(body)[0]['name'] == 'x'
 
 
+def test_http_faces_capture_review_keep(server, tmp_path):
+    base, app, _ = server
+    faces = app.faces
+    code, _, body = call(base + '/api/faces/capture', {'name': '../evil'})
+    assert code == 400
+    assert call(base + '/api/faces/capture', {'name': 'Dan', 'count': 5})[0] == 200
+    assert call(base + '/api/faces/capture', {'name': 'Dan'})[0] == 409       # busy
+    staged = tmp_path / 'faces' / 'staging' / 'Dan'
+    for i in range(2):
+        cv2.imwrite(str(staged / f'cam_{i}.jpg'), np.zeros((8, 8, 3), np.uint8))
+    faces.job['proc'].end(0)                       # capture finished -> review starts
+    assert json.loads(call(base + '/api/state')[2])['faces']['busy'] == 'review'
+    (staged / '.review.json').write_text(json.dumps({'name': 'Dan', 'photos': [
+        {'file': 'cam_0.jpg', 'keep': True, 'reasons': [], 'notes': []},
+        {'file': 'cam_1.jpg', 'keep': False, 'reasons': ['looks like X (0.40)'], 'notes': []}]}))
+    faces.job['proc'].end(0)
+    s = json.loads(call(base + '/api/state')[2])['faces']
+    assert s['busy'] is None and s['review']['name'] == 'Dan'
+    code, ctype, _ = call(base + '/api/faces/photo?kind=staged&name=Dan&file=cam_0.jpg')
+    assert code == 200 and ctype == 'image/jpeg'
+    assert call(base + '/api/faces/photo?kind=staged&name=Dan&file=../../x.jpg')[0] == 404
+    assert call(base + '/api/faces/keep', {'name': 'Dan', 'files': 'cam_0.jpg'})[0] == 400
+    assert call(base + '/api/faces/keep', {'name': 'Dan', 'files': ['cam_0.jpg']})[0] == 200
+    assert os.listdir(tmp_path / 'faces' / 'authorized_faces' / 'Dan') == ['cam_0.jpg']
+    s = json.loads(call(base + '/api/state')[2])['faces']
+    assert s['review'] is None and s['people'] == [{'name': 'Dan', 'photos': 1, 'enrolled': 0}]
+    assert s['database']['outdated']
+    assert call(base + '/api/faces/rebuild', {})[0] == 200
+
+
 def test_page_only_calls_api_routes_that_exist():
     with open(os.path.join(HERE, '..', 'web', 'index.html')) as f:
         page = f.read()
     for route in ('/api/state', '/api/map.png', '/api/map?', '/api/runs', '/api/log',
                   '/api/power/on', '/api/power/off', '/api/command', '/api/click',
-                  '/api/relocalize'):
+                  '/api/relocalize', '/api/faces/capture', '/api/faces/stop',
+                  '/api/faces/keep', '/api/faces/discard', '/api/faces/rebuild',
+                  '/api/faces/preview.jpg', '/api/faces/photo'):
         assert route in page
     src = open(wl.__file__).read()
     for route in ('/api/state', '/api/map.png', "'/api/map'", '/api/runs', '/api/log',
                   '/api/power/on', '/api/power/off', '/api/command', '/api/click',
-                  '/api/relocalize'):
+                  '/api/relocalize', '/api/faces/capture', '/api/faces/stop',
+                  '/api/faces/keep', '/api/faces/discard', '/api/faces/rebuild',
+                  '/api/faces/preview.jpg', '/api/faces/photo'):
         assert route in src
 
 

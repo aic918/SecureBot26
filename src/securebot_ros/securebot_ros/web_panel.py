@@ -6,7 +6,8 @@
 Power the robot software on for a room, Start / Stop / Go home, re-localize, watch the robot
 on the map and tap an orange box to remove it. The panel itself is light (no Nav2, no
 motors): leave it running; it starts and stops the laps launch (web_logic.StackManager).
-Anyone who can reach the port can drive the robot: use --host 127.0.0.1 off a trusted network.
+Anyone who can reach the port can drive the robot and enroll faces (add themselves as
+authorized): use --host 127.0.0.1 off a trusted network.
 
 This file is the ROS side (RosBridge: /laps/command, /clicked_point out; /laps/status,
 /laps/path, /laps/current, /laps/debris, /laps/home, /esp32/status, TF map -> base_link in);
@@ -150,6 +151,7 @@ def main(args=None):
         pass
     finally:
         server.shutdown()
+        app.faces.shutdown()
         if app.stack.state not in ('off', 'crashed'):
             bridge.get_logger().info('Shutting the robot software down')
             app.stack.stop()

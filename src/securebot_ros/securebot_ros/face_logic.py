@@ -165,6 +165,62 @@ class FaceDB:
         return UNCERTAIN, best
 
 
+def review_photos(photos, person, others, own=None, uncheck_below=0.50, note_below=0.55,
+                  rest_max=0.55, own_max=0.50, min_rest=4):
+    """
+    Check new enrollment photos of `person` before they are added.
+
+    photos: [{"file", "encoding" (128 numbers or None), "note"}].
+    others: {name: [encodings]} of the other enrolled people; own: this person's
+    enrolled encodings, or None if they are new. Returns, per photo,
+    {"file", "keep", "reasons", "notes", "closest", "rest", "own"}: keep is False
+    when there is a reason not to use it (no face; within uncheck_below of someone
+    else, so it could be mistaken for them; unlike the rest of this set, which
+    is usually a side view, heavy blur or a different person; or, for someone
+    already enrolled, unlike their enrolled photos). Being close to someone but not
+    that close only adds a note.
+    """
+    encs = [None if p.get("encoding") is None else np.asarray(p["encoding"], dtype=np.float64)
+            for p in photos]
+    others = {n: np.asarray(e, dtype=np.float64) for n, e in others.items() if len(e)}
+    own = None if own is None or not len(own) else np.asarray(own, dtype=np.float64)
+    valid = [e for e in encs if e is not None]
+    out = []
+    for photo, enc in zip(photos, encs):
+        item = {"file": photo["file"], "reasons": [], "notes": [], "closest": None,
+                "rest": None, "own": None}
+        if photo.get("note"):
+            item["notes"].append(photo["note"])
+        if enc is None:
+            item["reasons"].append("no face found")
+        else:
+            if others:
+                dists = {n: float(np.min(np.linalg.norm(e - enc, axis=1)))
+                         for n, e in others.items()}
+                name = min(dists, key=dists.get)
+                dist = dists[name]
+                item["closest"] = [name, round(dist, 3)]
+                if dist < uncheck_below:
+                    item["reasons"].append(f"looks like {name} ({dist:.2f})")
+                elif dist < note_below:
+                    item["notes"].append(f"close to {name} ({dist:.2f})")
+            rest = [float(np.linalg.norm(e - enc)) for e in valid if e is not enc]
+            if len(rest) + 1 >= min_rest:
+                item["rest"] = round(float(np.median(rest)), 3)
+                if item["rest"] > rest_max:
+                    item["reasons"].append(
+                        f"unlike the other photos ({item['rest']:.2f}): side view, blur "
+                        "or someone else")
+            if own is not None:
+                item["own"] = round(float(np.min(np.linalg.norm(own - enc, axis=1))), 3)
+                if item["own"] > own_max:
+                    item["reasons"].append(
+                        f"doesn't match {person}'s enrolled photos ({item['own']:.2f})")
+        item["keep"] = not item["reasons"]
+        out.append(item)
+    return out
+
+
 class TrackIdentity:
     """
     Identity of one tracked person, decided by a streak of consistent face reads.

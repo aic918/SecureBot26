@@ -57,6 +57,27 @@ to remove it) and home; **Power off** shuts the robot software down. Ctrl+C in t
 terminal stops everything. Anyone who can reach the port can drive the robot: on an untrusted
 network use `--host 127.0.0.1`. The terminal commands below still work (not at the same time).
 
+**Enroll faces from the web panel (Faces card)**
+The Faces card adds or updates the people the live face node recognizes
+(`~/yolo/securebot_face_id/`). The face steps run in the vision venv (`~/yolo-env`).
+1. Under **Add or update a person**, type the name (an existing person's name adds photos
+   to them) and press **Start capture**. Only that person should be in view, about 1–1.5 m
+   from the camera: look at it, then slowly turn left, right, up and down until the bar is
+   full. The live view and hints ("Come closer", "Turn your head a little") show what the
+   camera sees. Photos wait in `staging/` until you check them.
+2. The photos are then checked automatically. Ones that could be mistaken for someone else
+   enrolled, that are unlike the rest (side views, someone else) or that don't match the
+   person's existing photos come back unticked with the reason. Also untick blurry or
+   cut-off ones, then press **Add ticked photos** (the rest are kept in `captures/`).
+3. Press **Rebuild face database**. The previous database is kept as
+   `authorized_faces.pkl.bak-<time>`, and the card warns about people who look alike.
+   Restart the live face node to use the new database.
+
+Capture needs the camera, so stop the live face node first. Anyone who can open the panel
+can enroll themselves as authorized: keep it on a trusted network or use `--host 127.0.0.1`.
+From a terminal, the same steps are `python -m securebot_ros.capture_faces --name <name>`,
+`review_faces` and `enroll_faces --backup` (with `~/yolo-env` active).
+
 **Explore and map a room**
 ```bash
 ros2 launch securebot_ros securebot_explore.launch.py room:="ENGR Hallway"

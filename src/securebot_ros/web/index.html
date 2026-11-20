@@ -62,6 +62,30 @@
   ul.runs { list-style: none; padding: 0; margin: 8px 0 0; font-size: 14px; }
   ul.runs li { padding: 6px 0; border-top: 1px solid var(--line); }
   ul.runs a { color: var(--home); margin-right: 8px; }
+  .hint { font-size: 14px; color: var(--muted); margin: 10px 0 0; }
+  .people { list-style: none; padding: 0; margin: 0; font-size: 15px; }
+  .people li { display: flex; justify-content: space-between; gap: 8px; padding: 6px 0;
+               border-top: 1px solid var(--line); }
+  .people li:first-child { border-top: 0; }
+  .people .n { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .warn { color: var(--warn); }
+  #f-preview { width: 100%; max-width: 480px; display: block; border-radius: 8px;
+               background: var(--bg); margin-top: 12px; aspect-ratio: 16 / 9; object-fit: cover; }
+  .bar { height: 8px; border-radius: 4px; background: var(--line); margin-top: 10px;
+         overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--go); transition: width .3s; }
+  .fgrid { display: grid; gap: 10px; margin-top: 12px;
+           grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+  .tile { border: 2px solid var(--line); border-radius: 10px; padding: 6px; font-size: 12px;
+          cursor: pointer; display: block; margin: 0; color: var(--text); }
+  .tile.flagged { border-color: var(--stop); }
+  .tile.off { opacity: .55; }
+  .tile img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px;
+              display: block; }
+  .tile input { width: auto; margin: 6px 6px 0 0; vertical-align: -2px; }
+  .tile .why { color: var(--stop); margin-top: 4px; }
+  .tile .note { color: var(--muted); margin-top: 2px; }
+  h3 { font-size: 15px; margin: 16px 0 4px; }
   .estop { position: fixed; right: 16px; bottom: 16px; width: auto; border-radius: 999px;
            padding: 16px 22px; font-size: 18px; box-shadow: 0 4px 16px rgba(0,0,0,.3);
            display: none; }
@@ -129,6 +153,45 @@
         <span><i class="sw" style="background:var(--box)"></i>Box (tap to remove)</span>
         <span><i class="sw" style="background:var(--home)"></i>Home</span>
       </div>
+    </section>
+    <section class="card" id="facescard">
+      <h2>Faces</h2>
+      <ul class="people" id="f-people"></ul>
+      <div id="f-db" class="msg"></div>
+      <details id="f-add">
+        <summary>Add or update a person</summary>
+        <label for="f-name">Name</label>
+        <input id="f-name" list="f-names" placeholder="e.g. Daniel" autocomplete="off">
+        <datalist id="f-names"></datalist>
+        <label for="f-count">Photos to take</label>
+        <input id="f-count" type="number" min="3" max="40" value="15" inputmode="numeric">
+        <div class="row">
+          <button id="f-capture" class="b-go">Start capture</button>
+          <button id="f-stop" class="b-stop">Stop</button>
+        </div>
+        <p class="hint">Only that person in view, about 1–1.5 m from the camera. Look at the
+          camera, then slowly turn left, right, up and down until the bar is full.</p>
+        <div id="f-live" hidden>
+          <img id="f-preview" alt="Camera view">
+          <div class="bar"><i id="f-bar"></i></div>
+          <div id="f-hint" class="msg"></div>
+        </div>
+      </details>
+      <div id="f-review" hidden>
+        <h3>Check the photos of <span id="f-rname"></span></h3>
+        <p class="hint">Ticked photos are added. Red ones were flagged (reason underneath).
+          Also untick any that are blurry, cut off or of someone else.</p>
+        <div id="f-grid" class="fgrid"></div>
+        <div class="row">
+          <button id="f-keep" class="b-go">Add ticked photos</button>
+          <button id="f-discard" class="b-plain">Discard all</button>
+        </div>
+      </div>
+      <div class="row">
+        <button id="f-rebuild" class="b-home">Rebuild face database</button>
+      </div>
+      <div id="f-msg" class="msg"></div>
+      <pre id="f-log" hidden style="margin-top:10px"></pre>
     </section>
     <section class="card">
       <details>
@@ -228,7 +291,87 @@ function render() {
   const room = S.stack.room || $('room').value;
   if (room && room !== mapRoom) loadMap(room);
   draw();
+  if (S.faces) renderFaces(S.faces);
 }
+
+// ---- Faces card -----------------------------------------------------------------------
+let reviewKey = '', peopleShown = '';
+const esc = t => String(t).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;',
+  '"': '&quot;', "'": '&#39;'}[c]));
+
+function renderFaces(F) {
+  const ppl = JSON.stringify(F.people);
+  if (ppl !== peopleShown) {
+    peopleShown = ppl;
+    $('f-people').innerHTML = F.people.length ? F.people.map(p =>
+      `<li><span>${esc(p.name)}</span><span class="n">${p.photos} photos` +
+      (p.photos !== p.enrolled ? ` · <span class="warn">${p.enrolled} in database</span>` : '') +
+      `</span></li>`).join('') : '<li>Nobody enrolled yet</li>';
+    $('f-names').innerHTML = F.people.map(p => `<option value="${esc(p.name)}">`).join('');
+  }
+  const db = F.database, close = (db.pairs || []).filter(p => p.confusable);
+  let dbText = db.built ? `Database: ${db.total} photos, built ${new Date(db.built * 1000)
+    .toLocaleString()}.` : 'No face database yet.';
+  if (db.outdated) dbText += ' Photos changed since then: rebuild to use them.';
+  if (close.length) dbText += ' Similar-looking: ' + close.map(p =>
+    `${p.a} & ${p.b} (${p.closest.toFixed(2)})`).join(', ') + '.';
+  $('f-db').textContent = dbText;
+  $('f-db').className = 'msg' + (db.outdated || close.length ? ' warn' : '');
+
+  const capturing = F.busy === 'capture', waiting = !!F.review;
+  $('f-capture').disabled = !!F.busy || waiting;
+  $('f-stop').disabled = !capturing;
+  $('f-rebuild').disabled = !!F.busy;
+  $('f-name').disabled = $('f-count').disabled = !!F.busy;
+  $('f-live').hidden = !capturing;
+  if (capturing) {
+    $('f-add').open = true;
+    const c = F.capture || {};
+    $('f-bar').style.width = c.count ? `${100 * c.saved / c.count}%` : '0';
+    say($('f-hint'), `${c.saved || 0} of ${c.count || '?'} · ${c.hint || 'Starting the camera'}`);
+  }
+  if (F.message) say($('f-msg'), F.message, F.error);
+  $('f-log').hidden = !(F.busy && F.busy !== 'capture' && F.log.length);
+  $('f-log').textContent = F.log.join('\n');
+
+  $('f-review').hidden = !waiting;
+  if (!waiting) { reviewKey = ''; return; }
+  const R = F.review, key = R.name + '|' + R.photos.map(p => p.file).join(',');
+  if (key === reviewKey) return;              // keep the ticks you changed
+  reviewKey = key;
+  $('f-rname').textContent = R.name;
+  $('f-grid').innerHTML = R.photos.map(p => {
+    const src = `/api/faces/photo?kind=staged&name=${encodeURIComponent(R.name)}` +
+      `&file=${encodeURIComponent(p.file)}`;
+    return `<label class="tile${p.keep ? '' : ' flagged off'}">` +
+      `<img src="${src}" alt="${esc(p.file)}" loading="lazy">` +
+      `<input type="checkbox" data-file="${esc(p.file)}"${p.keep ? ' checked' : ''}>` +
+      `${p.keep ? 'Add' : 'Leave out'}` +
+      p.reasons.map(r => `<div class="why">${esc(r)}</div>`).join('') +
+      p.notes.map(n => `<div class="note">${esc(n)}</div>`).join('') + '</label>';
+  }).join('');
+  for (const box of $('f-grid').querySelectorAll('input')) box.onchange = () => {
+    box.parentElement.classList.toggle('off', !box.checked);
+    box.nextSibling.textContent = box.checked ? 'Add' : 'Leave out';
+  };
+}
+
+$('f-capture').onclick = () => act($('f-msg'), '/api/faces/capture',
+  {name: $('f-name').value.trim(), count: +$('f-count').value || 15});
+$('f-stop').onclick = () => act($('f-msg'), '/api/faces/stop', {});
+$('f-keep').onclick = () => {
+  const files = [...$('f-grid').querySelectorAll('input:checked')].map(b => b.dataset.file);
+  const name = $('f-rname').textContent;
+  if (confirm(`Add ${files.length} photos to ${name}?`))
+    act($('f-msg'), '/api/faces/keep', {name, files});
+};
+$('f-discard').onclick = () => { const name = $('f-rname').textContent;
+  if (confirm(`Leave out all photos of ${name}?`)) act($('f-msg'), '/api/faces/discard', {name}); };
+$('f-rebuild').onclick = () => act($('f-msg'), '/api/faces/rebuild', {});
+setInterval(() => {                          // live camera view while capturing
+  if (S && S.faces && S.faces.busy === 'capture')
+    $('f-preview').src = '/api/faces/preview.jpg?t=' + Date.now();
+}, 300);
 
 async function loadMap(room) {
   mapRoom = room;

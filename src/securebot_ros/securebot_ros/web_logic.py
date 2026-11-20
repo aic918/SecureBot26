@@ -11,6 +11,8 @@ laps: a browser on the same network opens http://<robot>:8080 and gets
   Re-localize                tools/global_localize.py on the room's map
   the live map               the room's map image, robot pose, lanes, boxes and home
   Power off                  Ctrl+C (SIGINT) to the launch, then SIGTERM / SIGKILL
+  Faces                      enroll people for face recognition (web_faces.FaceEnroller):
+                             capture from the camera, check, keep, rebuild the database
 
 PanelApp holds that state and answers the HTTP API (make_server); the ROS side is passed in
 as a `bridge` (web_panel.RosBridge on the robot, a fake one in the tests) with
@@ -28,6 +30,8 @@ from urllib.parse import parse_qs, urlparse
 
 import cv2
 import yaml
+
+from securebot_ros.web_faces import FaceEnroller
 
 WS = os.path.expanduser('~/securebot_ws')
 MAPS_DIR = os.path.join(WS, 'maps')
@@ -307,8 +311,9 @@ class PanelApp:
 
     def __init__(self, bridge, stack=None, maps_dir=MAPS_DIR, runs_dir=RUNS_DIR,
                  tools_dir=TOOLS_DIR, ports=serial_ports, ps=None, clock=time.monotonic,
-                 spawn=None):
+                 spawn=None, faces=None):
         self.bridge, self.maps_dir, self.runs_dir = bridge, maps_dir, runs_dir
+        self.faces = faces or FaceEnroller()
         self.tools_dir = tools_dir
         self.stack = stack or StackManager(runs_dir, tools_dir)
         self.ports, self.clock = ports, clock
@@ -421,6 +426,7 @@ class PanelApp:
             'esp32': robot.get('esp32'),
             'rooms': [r['name'] for r in load_rooms(self.maps_dir)],
             'port': esp32_port(self.ports()),
+            'faces': self.faces.state(),
         }
 
     def map_for(self, room_name):
@@ -474,6 +480,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, meta)
             if url.path == '/api/runs':
                 return self._send(200, list_runs(self.app.runs_dir))
+            if url.path == '/api/faces/preview.jpg':
+                jpg = self.app.faces.preview()
+                return self._send(200, jpg, 'image/jpeg') if jpg else \
+                    self._error(404, 'No camera view yet')
+            if url.path == '/api/faces/photo':
+                jpg = self.app.faces.photo(q.get('kind', [''])[0], q.get('name', [''])[0],
+                                           q.get('file', [''])[0])
+                return self._send(200, jpg, 'image/jpeg')
             if url.path == '/api/log':
                 name = os.path.basename(q.get('file', [''])[0])
                 path = os.path.join(self.app.runs_dir, name)
@@ -508,6 +522,20 @@ class Handler(BaseHTTPRequestHandler):
                 text = self.app.click(body['x'], body['y'])
             elif path == '/api/relocalize':
                 text = self.app.relocalize()
+            elif path == '/api/faces/capture':
+                text = self.app.faces.start_capture(body.get('name', ''),
+                                                    body.get('count', 15))
+            elif path == '/api/faces/stop':
+                text = self.app.faces.stop_capture()
+            elif path == '/api/faces/keep':
+                files = body.get('files', [])
+                if not isinstance(files, list):
+                    raise ValueError('files must be a list')
+                text = self.app.faces.keep(str(body.get('name', '')), files)
+            elif path == '/api/faces/discard':
+                text = self.app.faces.discard(str(body.get('name', '')))
+            elif path == '/api/faces/rebuild':
+                text = self.app.faces.rebuild()
             else:
                 return self._error(404, 'Not found')
         except (ValueError, KeyError, TypeError) as e:
