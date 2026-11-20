@@ -26,8 +26,9 @@ from rclpy.node import Node
 from std_msgs.msg import Bool, String
 
 from securebot_ros.face_logic import (
-    AUTHORIZED, crop_scale, face_quality_ok, FaceDB, head_region, largest_face,
-    overall_status, recognized_names, SCANNING, TrackIdentity, UNAUTHORIZED, UNKNOWN,
+    AUTHORIZED, box_iou, crop_scale, face_quality_ok, FaceDB, head_region, largest_face,
+    overall_status, own_face, recognized_names, SCANNING, touches_edge, TrackIdentity,
+    UNAUTHORIZED, UNKNOWN,
 )
 
 # BGR colours per track state
@@ -106,6 +107,9 @@ class SecureBotLiveNode(Node):
             "face_min_size": 40,
             "face_min_sharpness": 30.0,
             "max_face_crops": 2,
+            # if a track's box overlaps its previous box less than this, the tracker
+            # has probably moved the ID onto someone else: identify the person again
+            "track_jump_iou": 0.3,
             "show_camera": True,
             # when set, save each face read (crop) and a full frame at every status
             # change here, to trace exactly which image caused a decision
@@ -132,6 +136,7 @@ class SecureBotLiveNode(Node):
         self.face_min_size = p["face_min_size"]
         self.face_min_sharpness = p["face_min_sharpness"]
         self.max_face_crops = p["max_face_crops"]
+        self.track_jump_iou = p["track_jump_iou"]
         self.show_camera = p["show_camera"]
         self.debug_dir = None
         if p["debug_dir"]:
@@ -167,6 +172,7 @@ class SecureBotLiveNode(Node):
         self.tracks = {}
         self.track_seen = {}      # id -> last time the tracker reported it
         self.track_face = {}      # id -> (time, (top, right, bottom, left)) last face box
+        self.track_box = {}       # id -> last person box, to spot an ID moving to someone else
         self.confirmed_ids = set()  # ids that reached yolo_confidence at least once
         self.track_forget_s = 3.0
 
@@ -257,14 +263,15 @@ class SecureBotLiveNode(Node):
             return face_recognition.face_locations(
                 rgb, number_of_times_to_upsample=self.face_upsample, model="hog")
 
-    def read_face(self, frame, box):
+    def read_face(self, frame, box, other_boxes=()):
         """
         Look for one face in a person's head area.
 
         Returns (label, distance, face_box) where label is a name, Unknown or
-        Uncertain; label is None when a face was seen but was too small or blurry to
-        vote. Returns None when no face was found (person turned away, etc.).
-        face_box is (top, right, bottom, left) in frame pixels.
+        Uncertain; label is None when a face was seen but must not vote: too small,
+        too blurry, cut off at the edge, or not clearly this person's (another face
+        in front of or behind them). Returns None when no face was found (person
+        turned away, etc.). face_box is (top, right, bottom, left) in frame pixels.
         """
         x1, y1, x2, y2 = head_region(box, frame.shape)
         region = frame[y1:y2, x1:x2]
@@ -276,14 +283,18 @@ class SecureBotLiveNode(Node):
         rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
 
         locations = self.detect_faces(rgb)
-        idx = largest_face(locations)
-        if idx is None:
+        if not locations:
             return None
-        top, right, bottom, left = locations[idx]
-        face_box = (
-            int(y1 + top / scale), int(x1 + right / scale),
-            int(y1 + bottom / scale), int(x1 + left / scale),
-        )
+        frame_boxes = [
+            (int(y1 + t / scale), int(x1 + r / scale), int(y1 + b / scale), int(x1 + lf / scale))
+            for t, r, b, lf in locations
+        ]
+        idx = own_face(frame_boxes, box, other_boxes)
+        if idx is None:
+            return None, None, frame_boxes[largest_face(locations)]
+        face_box = frame_boxes[idx]
+        if touches_edge(face_box, (x1, y1, x2, y2)):
+            return None, None, face_box
 
         # Judge size and sharpness on the camera's own pixels: enlarging a small face
         # adds no detail, and the enlargement itself would read as blur.
@@ -319,13 +330,29 @@ class SecureBotLiveNode(Node):
             if conf >= self.yolo_confidence:
                 self.confirmed_ids.add(tid)
             if tid in self.confirmed_ids:
-                people[tid] = tuple(int(v) for v in box)
+                box = tuple(int(v) for v in box)
+                people[tid] = box
                 self.track_seen[tid] = now
+                self.check_jump(tid, box)
         return people
+
+    def check_jump(self, tid, box):
+        """Forget a track's identity if its box jumped (the ID likely moved to someone)."""
+        prev = self.track_box.get(tid)
+        self.track_box[tid] = box
+        track = self.tracks.get(tid)
+        if prev is None or track is None or box_iou(prev, box) >= self.track_jump_iou:
+            return
+        if track.state != SCANNING:
+            self.get_logger().info(
+                f"Person #{tid}: box jumped (overlap {box_iou(prev, box):.2f}); "
+                f"was {track.state}, identifying again")
+        self.tracks[tid] = TrackIdentity(
+            self.vote_window, self.votes_needed, self.face_recheck_s)
 
     def forget_old_tracks(self, now):
         for tid in [t for t, seen in self.track_seen.items() if now - seen > self.track_forget_s]:
-            for store in (self.tracks, self.track_seen, self.track_face):
+            for store in (self.tracks, self.track_seen, self.track_face, self.track_box):
                 store.pop(tid, None)
             self.confirmed_ids.discard(tid)
 
@@ -337,7 +364,8 @@ class SecureBotLiveNode(Node):
         due = [tid for tid in people if self.tracks[tid].needs_face(now)]
         due.sort(key=lambda tid: self.tracks[tid].priority(now))
         for tid in due[:self.max_face_crops]:
-            read = self.read_face(frame, people[tid])
+            others = [b for other, b in people.items() if other != tid]
+            read = self.read_face(frame, people[tid], others)
             if read is None:
                 continue
             label, dist, face_box = read

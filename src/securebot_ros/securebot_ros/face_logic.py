@@ -73,6 +73,56 @@ def face_quality_ok(face_size, sharpness, min_size=40, min_sharpness=30.0):
     return face_size >= min_size and sharpness >= min_sharpness
 
 
+def box_iou(a, b):
+    """Return the intersection-over-union of two (x1, y1, x2, y2) boxes (0 = apart, 1 = same)."""
+    ix = max(0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / union if union > 0 else 0.0
+
+
+def own_face(face_boxes, person_box, other_boxes=()):
+    """
+    Return the index of the face that belongs to this person, or None if unclear.
+
+    face_boxes are (top, right, bottom, left) and boxes (x1, y1, x2, y2), all in
+    frame pixels. A face whose centre is left or right of the person box only got
+    into the crop through the padding and belongs to a neighbour, so it is ignored.
+    A face whose centre is also inside another person's box could be either of
+    them (one is in front of the other; the one behind may be fully hidden), so it
+    makes the read unclear. More than one remaining face is unclear too.
+    """
+    def inside(face, box):
+        top, right, bottom, left = face
+        cx, cy = (left + right) / 2, (top + bottom) / 2
+        return box[0] <= cx <= box[2] and box[1] <= cy <= box[3]
+
+    x1, _, x2, _ = person_box
+    candidates = [i for i, (_, right, _, left) in enumerate(face_boxes)
+                  if x1 <= (left + right) / 2 <= x2]
+    if len(candidates) != 1:
+        return None
+    face = face_boxes[candidates[0]]
+    if any(inside(face, other) for other in other_boxes):
+        return None
+    return candidates[0]
+
+
+def touches_edge(face_box, region, margin=2):
+    """
+    Return whether a face reaches the edge of the searched region (so it is cut off).
+
+    face_box is (top, right, bottom, left) and region (x1, y1, x2, y2), both in frame
+    pixels; the region is clamped to the frame, so this also catches faces cut off
+    by the edge of the camera image. A cut-off face gives a misleading encoding.
+    """
+    top, right, bottom, left = face_box
+    x1, y1, x2, y2 = region
+    return (top <= y1 + margin or left <= x1 + margin
+            or bottom >= y2 - margin or right >= x2 - margin)
+
+
 class FaceDB:
     """Enrolled encodings grouped by person."""
 

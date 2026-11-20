@@ -7,9 +7,10 @@ padded face crop into <faces_dir>/<name>/ whenever the face is sharp, big enough
 and a new look compared with what was already saved this session (so turning the
 head slowly collects different angles instead of many copies of one pose).
 
-Only the person being enrolled should be in view. Each frame's distance to the
-person's current enrollment is shown, so poses the database doesn't cover yet
-stand out (high numbers). Afterwards, re-run enroll_faces.
+If the person is already enrolled, the face that best matches their enrollment is
+used and only saved when its distance is at most --max-dist, so other people in
+view are ignored. For someone not enrolled yet, a photo is only saved when exactly
+one face is in view. Afterwards, check the photos and re-run enroll_faces.
 
   python -m securebot_ros.capture_faces --name alexis
 """
@@ -22,7 +23,7 @@ import cv2
 import face_recognition
 import numpy as np
 
-from securebot_ros.face_logic import FaceDB, largest_face
+from securebot_ros.face_logic import FaceDB
 
 DEFAULT_BASE = Path("~/yolo/securebot_face_id").expanduser()
 
@@ -38,16 +39,34 @@ def open_camera(index):
     return cap
 
 
-def find_face(frame, detect_width=640):
-    """Return the largest face as (top, right, bottom, left) in frame pixels, or None."""
+def find_faces(frame, detect_width=640):
+    """Return all faces as (top, right, bottom, left) in frame pixels."""
     scale = detect_width / frame.shape[1]
     small = cv2.resize(frame, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
     rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
     locations = face_recognition.face_locations(rgb, number_of_times_to_upsample=1, model="cnn")
-    idx = largest_face(locations)
-    if idx is None:
-        return None
-    return tuple(int(v / scale) for v in locations[idx])
+    return [tuple(int(v / scale) for v in loc) for loc in locations]
+
+
+def pick_face(frame, boxes, db, name):
+    """
+    Choose which face to consider; return (box, encoding, distance) or (None, None, why).
+
+    Enrolled person: the face closest to their enrollment, whoever else is in view.
+    New person: only when exactly one face is in view (anyone else could be saved).
+    """
+    if not boxes:
+        return None, None, "no face"
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    if db is None or name not in db.people:
+        if len(boxes) > 1:
+            return None, None, f"{len(boxes)} faces in view - only {name} please"
+        enc = face_recognition.face_encodings(rgb, boxes, model="large")[0]
+        return boxes[0], enc, None
+    encs = face_recognition.face_encodings(rgb, boxes, model="large")
+    dists = [db.distances(e)[name] for e in encs]
+    best = int(np.argmin(dists))
+    return boxes[best], encs[best], dists[best]
 
 
 def padded_crop(frame, box, pad=0.8):
@@ -73,6 +92,8 @@ def main():
     parser.add_argument("--novelty", type=float, default=0.12,
                         help="min encoding distance from photos already saved this session")
     parser.add_argument("--min-gap", type=float, default=0.7, help="seconds between saves")
+    parser.add_argument("--max-dist", type=float, default=0.42,
+                        help="enrolled person: only save faces at most this far from them")
     parser.add_argument("--no-window", action="store_true")
     args = parser.parse_args()
 
@@ -100,20 +121,20 @@ def main():
             if not ok:
                 continue
             shown = frame.copy()
-            box = find_face(frame)
-            status = "no face"
+            box, enc, dist = pick_face(frame, find_faces(frame), db, args.name)
+            status = dist if box is None else ""
             if box is not None:
                 top, right, bottom, left = box
                 size = min(right - left, bottom - top)
                 gray = cv2.cvtColor(frame[top:bottom, left:right], cv2.COLOR_BGR2GRAY)
                 sharp = cv2.Laplacian(gray, cv2.CV_64F).var() if gray.size else 0.0
-                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                enc = face_recognition.face_encodings(rgb, [box], model="large")[0]
-                dist = db.distances(enc).get(args.name) if db else None
                 novelty = min((np.linalg.norm(enc - e) for e in saved), default=1.0)
                 dist_txt = "n/a" if dist is None else f"{dist:.2f}"
                 status = f"dist {dist_txt} size {size} sharp {sharp:.0f} new {novelty:.2f}"
                 good = size >= args.min_size and sharp >= args.min_sharpness
+                if dist is not None and dist > args.max_dist:
+                    good = False
+                    status += f" - not {args.name}?"
                 due = time.monotonic() - last_save > args.min_gap
                 if good and novelty >= args.novelty and due:
                     path = out_dir / f"cam_{stamp}_{len(saved) + 1:02d}.jpg"

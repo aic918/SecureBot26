@@ -1,8 +1,8 @@
 import numpy as np
 from securebot_ros.face_logic import (
-    AUTHORIZED, crop_scale, face_quality_ok, FaceDB, head_region, largest_face,
-    NO_PERSON, overall_status, recognized_names, SCANNING, TrackIdentity,
-    UNAUTHORIZED, UNCERTAIN, UNKNOWN,
+    AUTHORIZED, box_iou, crop_scale, face_quality_ok, FaceDB, head_region, largest_face,
+    NO_PERSON, overall_status, own_face, recognized_names, SCANNING, touches_edge,
+    TrackIdentity, UNAUTHORIZED, UNCERTAIN, UNKNOWN,
 )
 
 
@@ -172,3 +172,48 @@ def test_largest_face_and_quality_gate():
     assert face_quality_ok(60, 100.0)
     assert not face_quality_ok(30, 100.0)
     assert not face_quality_ok(60, 5.0)
+
+
+# ---- whose face, cut-off faces, box jumps ----
+
+def test_own_face_ignores_a_neighbour_seen_through_the_padding():
+    person = (100, 0, 300, 600)
+    faces = [(50, 250, 150, 150), (50, 340, 150, 280)]   # second centre x=310: outside
+    assert own_face(faces, person) == 0
+
+
+def test_own_face_is_none_when_someone_is_in_front_or_behind():
+    person = (100, 0, 300, 600)
+    faces = [(50, 200, 150, 120), (60, 290, 140, 220)]   # both centres inside the box
+    assert own_face(faces, person) is None
+
+
+def test_own_face_with_no_faces():
+    assert own_face([], (0, 0, 10, 10)) is None
+
+
+def test_touches_edge_flags_cut_off_faces_only():
+    region = (100, 50, 400, 350)
+    assert not touches_edge((100, 300, 200, 200), region)
+    assert touches_edge((50, 300, 200, 200), region)     # cut at the top
+    assert touches_edge((100, 300, 200, 101), region)    # cut at the left
+    assert touches_edge((100, 400, 200, 200), region)    # cut at the right
+
+
+def test_box_iou():
+    assert box_iou((0, 0, 10, 10), (0, 0, 10, 10)) == 1.0
+    assert box_iou((0, 0, 10, 10), (20, 0, 30, 10)) == 0.0
+    assert abs(box_iou((0, 0, 10, 10), (5, 0, 15, 10)) - 1 / 3) < 1e-9
+
+
+def test_own_face_is_none_when_the_face_is_inside_someone_elses_box():
+    # Alexis walks in front of Balde: only her face is visible, inside both boxes
+    balde, alexis = (100, 0, 400, 700), (150, 40, 330, 700)
+    faces = [(80, 280, 200, 180)]
+    assert own_face(faces, balde, [alexis]) is None
+    assert own_face(faces, alexis, [balde]) is None
+
+
+def test_own_face_with_others_nearby_but_not_overlapping():
+    faces = [(80, 280, 200, 180)]
+    assert own_face(faces, (100, 0, 400, 700), [(600, 0, 900, 700)]) == 0
