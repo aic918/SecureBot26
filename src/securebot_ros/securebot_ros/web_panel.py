@@ -3,15 +3,17 @@
   ros2 run securebot_ros web_panel                 # then open http://<robot>:8080
   ros2 run securebot_ros web_panel --port 8080 --host 0.0.0.0
 
-Power the robot software on for a room, Start / Stop / Go home, re-localize, watch the robot
-on the map and tap an orange box to remove it. The panel itself is light (no Nav2, no
-motors): leave it running; it starts and stops the laps launch (web_logic.StackManager).
+Start (powering the robot software on for the active room if needed) / Stop / Return home,
+re-localize, watch the robot on the map or the camera, tap an orange box to remove it; manage
+rooms (rename, delete, no-pass lines, map a new one by exploring) and enrolled faces. The
+panel itself is light (no Nav2, no motors): leave it running; it starts and stops the laps or
+explore launch (web_logic.StackManager).
 Anyone who can reach the port can drive the robot and enroll faces (add themselves as
 authorized): use --host 127.0.0.1 off a trusted network.
 
-This file is the ROS side (RosBridge: /laps/command, /clicked_point out; /laps/status,
-/laps/path, /laps/current, /laps/debris, /laps/home, /esp32/status, TF map -> base_link in);
-the rest is in web_logic.py.
+This file is the ROS side (RosBridge: /laps/command, /explore/command, /clicked_point out;
+/laps/status, /explore/status, /laps/path, /laps/current, /laps/debris, /laps/home, /map
+(while exploring), /esp32/status, TF map -> base_link in); the rest is in web_logic.py.
 """
 import argparse
 import json
@@ -22,7 +24,7 @@ import time
 
 import rclpy
 from geometry_msgs.msg import PointStamped
-from nav_msgs.msg import Path
+from nav_msgs.msg import OccupancyGrid, Path
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
@@ -44,9 +46,13 @@ class RosBridge(Node):
                              reliability=ReliabilityPolicy.RELIABLE)
         self.lock = threading.Lock()
         self.reset()
-        self.cmd_pub = self.create_publisher(String, '/laps/command', 10)
+        self.cmd_pub = {'laps': self.create_publisher(String, '/laps/command', 10),
+                        'explore': self.create_publisher(String, '/explore/command', 10)}
         self.click_pub = self.create_publisher(PointStamped, '/clicked_point', 10)
-        self.create_subscription(String, '/laps/status', self.on_status, 10)
+        self.create_subscription(String, '/laps/status', lambda m: self.on_status('laps', m), 10)
+        self.create_subscription(String, '/explore/status',
+                                 lambda m: self.on_status('explore', m), 10)
+        self.create_subscription(OccupancyGrid, '/map', self.on_map, latched)
         self.create_subscription(String, '/esp32/status', self.on_esp32, 10)
         self.create_subscription(Path, '/laps/path', lambda m: self.on_path('path', m), latched)
         self.create_subscription(Path, '/laps/current', lambda m: self.on_path('current', m),
@@ -59,18 +65,43 @@ class RosBridge(Node):
 
     def reset(self):
         with self.lock:
-            self.status, self.status_time = None, None
+            self.status = {}              # kind -> (status dict, monotonic time)
             self.pose = self.home = self.esp32 = None
             self.path, self.current, self.boxes = [], [], []
+            self.grid, self.grid_version, self.png = None, 0, (0, None)
 
     # in --------------------------------------------------------------------------------------
-    def on_status(self, msg):
+    def on_status(self, kind, msg):
         try:
             status = json.loads(msg.data)
         except ValueError:
             return
         with self.lock:
-            self.status, self.status_time = status, time.monotonic()
+            self.status[kind] = (status, time.monotonic())
+
+    def on_map(self, msg):
+        info = msg.info
+        with self.lock:
+            self.grid = msg
+            self.grid_version += 1
+            self.grid_meta = {'resolution': float(info.resolution),
+                              'origin': [float(info.origin.position.x),
+                                         float(info.origin.position.y)],
+                              'width': int(info.width), 'height': int(info.height),
+                              'version': self.grid_version}
+
+    def live_png(self):
+        """The newest /map as PNG (converted once per new map)."""
+        with self.lock:
+            grid, version = self.grid, self.grid_version
+            if grid is None:
+                return None
+            if self.png[0] == version:
+                return self.png[1]
+        png = wl.occupancy_png(grid.data, grid.info.width, grid.info.height)
+        with self.lock:
+            self.png = (version, png)
+        return png
 
     def on_esp32(self, msg):
         with self.lock:
@@ -101,12 +132,12 @@ class RosBridge(Node):
             self.pose = [round(tr.x, 3), round(tr.y, 3), round(yaw_of(t.transform.rotation), 3)]
 
     # out -------------------------------------------------------------------------------------
-    def send_command(self, cmd):
+    def send_command(self, cmd, target='laps'):
         msg = String(data=cmd)
-        for _ in range(3):              # a busy laps node can miss a single message
-            self.cmd_pub.publish(msg)
+        for _ in range(3):              # a busy node can miss a single message
+            self.cmd_pub[target].publish(msg)
             time.sleep(0.05)
-        self.get_logger().info(f'command: {cmd}')
+        self.get_logger().info(f'command to {target}: {cmd}')
 
     def click(self, x, y):
         msg = PointStamped()
@@ -115,12 +146,14 @@ class RosBridge(Node):
         msg.point.x, msg.point.y = float(x), float(y)
         self.click_pub.publish(msg)
 
-    def snapshot(self):
+    def snapshot(self, kind='laps'):
         with self.lock:
-            age = None if self.status_time is None else time.monotonic() - self.status_time
-            return {'status': self.status, 'status_age': age, 'pose': self.pose,
+            status, t = self.status.get(kind, (None, None))
+            age = None if t is None else time.monotonic() - t
+            return {'status': status, 'status_age': age, 'pose': self.pose,
                     'path': self.path, 'current': self.current, 'boxes': self.boxes,
-                    'home': self.home, 'esp32': self.esp32}
+                    'home': self.home, 'esp32': self.esp32,
+                    'live_map': self.grid_meta if kind == 'explore' and self.grid else None}
 
 
 def static_dir():

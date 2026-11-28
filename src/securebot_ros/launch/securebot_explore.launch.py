@@ -13,6 +13,9 @@ Otherwise save the map with "Save current map as a new room..." in the
 "SecureBot Rooms" window (rooms:=false leaves that window out), or by hand:
   ros2 run nav2_map_server map_saver_cli -f maps/<name> --ros-args -p save_map_timeout:=10.0
 
+The web panel's Map Manager runs it as: room:=<name> rooms:=false rviz:=false panel:=web
+esp32_port:=<port> (no windows; its own Start / Stop / Return home buttons and live map).
+
 Don't run it together with the live, teleop or nav launches (only one program can own the
 ESP32 port, and only one SLAM may run).
 """
@@ -21,11 +24,13 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription
-from launch.conditions import IfCondition
+from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+
+ESP32_PORT = '/dev/serial/by-path/platform-3610000.usb-usb-0:2.4:1.0-port0'   # teleop's default
 
 
 def generate_launch_description():
@@ -39,15 +44,25 @@ def generate_launch_description():
                               description='save the map as this room when scanned'),
         DeclareLaunchArgument('rooms', default_value='true',
                               description='also open the SecureBot Rooms window'),
+        DeclareLaunchArgument('rviz', default_value='true'),
+        DeclareLaunchArgument('panel', default_value='true',
+                              description='the "SecureBot Explore" window; the web panel '
+                                          '(web_panel) passes panel:=web for none'),
+        DeclareLaunchArgument('esp32_port', default_value=ESP32_PORT,
+                              description='ESP32 serial port (by USB socket path)'),
         GroupAction(scoped=True, actions=[IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(launch('securebot_slam.launch.py')))]),
+            PythonLaunchDescriptionSource(launch('securebot_slam.launch.py')),
+            launch_arguments={'rviz': LaunchConfiguration('rviz')}.items())]),
         GroupAction(scoped=True, actions=[IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(launch('securebot_teleop.launch.py')))]),
+            PythonLaunchDescriptionSource(launch('securebot_teleop.launch.py')),
+            launch_arguments={'port': LaunchConfiguration('esp32_port')}.items())]),
         Node(package='securebot_ros', executable='explore_node', output='screen',
              parameters=[{'coverage_goal': ParameterValue(LaunchConfiguration('coverage_goal'),
                                                           value_type=float),
                           'room': ParameterValue(LaunchConfiguration('room'), value_type=str)}]),
-        Node(package='securebot_ros', executable='explore_panel', output='screen'),
+        Node(package='securebot_ros', executable='explore_panel', output='screen',
+             condition=UnlessCondition(PythonExpression(
+                 ["'", LaunchConfiguration('panel'), "' == 'web'"]))),
         Node(package='securebot_ros', executable='room_manager', output='screen',
              condition=IfCondition(LaunchConfiguration('rooms'))),
     ])

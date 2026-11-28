@@ -12,6 +12,9 @@ The same steps as by hand, as buttons:
   Keep      the ticked photos move to authorized_faces/<name>/, the rest to captures/
   Rebuild   enroll_faces --backup rebuilds the database (the old one is kept) and writes
             a report: photos per person and who could be confused with whom
+  Manage    look through a person's photos, delete single ones or the whole person, or retake
+            them (a capture whose kept photos replace the old ones). Nothing is really
+            deleted: it moves to captures/, like the photos left out at Keep
 
 The face libraries live in the vision venv (~/yolo-env), not the system Python the panel
 runs in, so each step is a child process of that venv; nothing here imports them. Only
@@ -115,6 +118,7 @@ class FaceEnroller:
                                                 text=True).stdout)
         self.lock = threading.Lock()
         self.job = None            # {'kind', 'name', 'proc', 'log'}
+        self.replace = None        # name whose old photos the waiting capture replaces (retake)
         self.message, self.error = '', False
         self.review = self._waiting_review()
 
@@ -160,7 +164,9 @@ class FaceEnroller:
             return []
 
     # actions -------------------------------------------------------------------------------
-    def start_capture(self, name, count=DEFAULT_COUNT):
+    def start_capture(self, name, count=DEFAULT_COUNT, replace=False):
+        """Capture photos of `name`; replace=True (retake): at Keep, the kept photos replace
+        the person's old ones."""
         with self.lock:
             self._poll()
             self._busy()
@@ -185,6 +191,7 @@ class FaceEnroller:
                 self.venv, 'capture_faces', '--name', name, '--out-dir', staged,
                 '--count', count, '--no-window', '--preview', self.preview_file,
                 '--status', self.status_file, '--encodings', self.db))
+            self.replace = name if replace else None
             self._say(f'Capturing {name}: look at the camera, then slowly turn your head')
             return self.message
 
@@ -212,6 +219,14 @@ class FaceEnroller:
                 raise ValueError(f'Not a waiting photo: {sorted(unknown)[0]}')
             dest = os.path.join(self.faces_dir, name)
             os.makedirs(dest, exist_ok=True)
+            replaced = 0
+            if self.replace == name and keep:          # retake: the old photos make way
+                old = photos_in(dest)
+                if old:
+                    aside = self._put_aside(name, 'replaced')
+                    for f in old:
+                        shutil.move(os.path.join(dest, f), os.path.join(aside, f))
+                    replaced = len(old)
             put_aside = self._put_aside(name, 'removed')
             for f in waiting:
                 target = os.path.join(dest if f in keep else put_aside, f)
@@ -219,8 +234,10 @@ class FaceEnroller:
                 if f in keep:
                     os.utime(target)      # newer than the database: it needs rebuilding
             self._clear_staging(name)
-            self._say(f'Added {len(keep)} photos to {name}; {len(waiting) - len(keep)} put '
-                      f'aside. Rebuild the database to use them')
+            self._say(f'Added {len(keep)} photos to {name}'
+                      + (f' (replacing the {replaced} old ones)' if replaced else '')
+                      + f'; {len(waiting) - len(keep)} put aside. Update the database to use '
+                      'them')
             return self.message
 
     def discard(self, name):
@@ -265,6 +282,56 @@ class FaceEnroller:
     def _clear_staging(self, name):
         shutil.rmtree(self._staged(name), ignore_errors=True)
         self.review = None
+        self.replace = None
+
+    def _person(self, name):
+        """The enrolled person's exact folder name; ValueError if there is none."""
+        if name not in person_folders(self.faces_dir):           # no '..', no paths
+            raise ValueError(f'Nobody called "{name}" is enrolled')
+        return name
+
+    def _not_in_use(self, name):
+        if self.job is not None and self.job['name'] == name:
+            raise RuntimeError(f'Busy: {self.job["kind"]} for {name} is running')
+        if self.review is not None and self.review['name'] == name:
+            raise RuntimeError(f'First keep or discard the new photos of {name}')
+
+    def delete_photo(self, name, file):
+        """Move one enrolled photo of `name` to captures/ (the database needs an update)."""
+        with self.lock:
+            self._poll()
+            name = self._person(name)
+            self._not_in_use(name)
+            file = os.path.basename(file or '')
+            folder = os.path.join(self.faces_dir, name)
+            if file not in photos_in(folder):
+                raise ValueError('No such photo')
+            shutil.move(os.path.join(folder, file),
+                        os.path.join(self._put_aside(name, 'deleted'), file))
+            left = len(photos_in(folder))
+            self._say(f'Deleted a photo of {name} ({left} left). Update the database to '
+                      'apply it')
+            return self.message
+
+    def delete_person(self, name):
+        """Move the person's whole folder to captures/; they are no longer authorized once the
+        database is updated."""
+        with self.lock:
+            self._poll()
+            name = self._person(name)
+            self._not_in_use(name)
+            aside = self._put_aside(name, 'deleted')
+            folder = os.path.join(self.faces_dir, name)
+            for f in os.listdir(folder):
+                shutil.move(os.path.join(folder, f), os.path.join(aside, f))
+            os.rmdir(folder)
+            self._say(f'Deleted {name} (photos kept in {aside}). Update the database to '
+                      'apply it')
+            return self.message
+
+    def photos(self, name):
+        """[file] of an enrolled person's photos."""
+        return photos_in(os.path.join(self.faces_dir, self._person(name)))
 
     # progress ------------------------------------------------------------------------------
     def _poll(self):
@@ -323,17 +390,21 @@ class FaceEnroller:
                 for f in files:
                     newest = max(newest, os.path.getmtime(os.path.join(folder, f)))
                 people.append({'name': name, 'photos': len(files),
-                               'enrolled': enrolled.get(name, 0)})
+                               'enrolled': enrolled.get(name, 0),
+                               'cover': files[0] if files else None})
             outdated = built is None or newest > built or \
                 set(enrolled) != {p['name'] for p in people if p['photos']}
+            # a photo deleted from the folder leaves its count behind: fewer than enrolled
+            outdated = outdated or any(p['photos'] != p['enrolled'] for p in people)
             return {
                 'busy': job['kind'] if job else None,
+                'replace': self.replace,
                 'name': job['name'] if job else None,
                 'message': self.message, 'error': self.error,
                 'capture': capture,
                 'review': self.review,
                 'people': people,
-                'database': {'built': built, 'outdated': bool(people) and outdated,
+                'database': {'built': built, 'outdated': bool(people or enrolled) and outdated,
                              'total': (report or {}).get('total'),
                              'pairs': (report or {}).get('pairs', []),
                              'backup': (report or {}).get('backup')},

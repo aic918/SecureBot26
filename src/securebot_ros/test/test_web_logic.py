@@ -91,8 +91,8 @@ class FakeBridge:
         self.sent, self.clicks, self.resets = [], [], 0
         self.snap = {}
 
-    def send_command(self, cmd):
-        self.sent.append(cmd)
+    def send_command(self, cmd, target='laps'):
+        self.sent.append(cmd if target == 'laps' else f'{target}:{cmd}')
 
     def click(self, x, y):
         self.clicks.append((x, y))
@@ -100,8 +100,22 @@ class FakeBridge:
     def reset(self):
         self.resets += 1
 
-    def snapshot(self):
+    def snapshot(self, kind='laps'):
+        self.kind = kind
         return dict(self.snap)
+
+
+class FakeCamera:
+    def __init__(self):
+        self.jpg, self.why = b'\xff\xd8jpg', None
+
+    def frame(self):
+        if self.why:
+            raise RuntimeError(self.why)
+        return self.jpg
+
+    def state(self):
+        return {'on': bool(self.jpg), 'error': ''}
 
 
 def app_for(tmp_path, maps, fos, ports=(LIDAR, ESP), ps=''):
@@ -111,7 +125,7 @@ def app_for(tmp_path, maps, fos, ports=(LIDAR, ESP), ps=''):
     app = wl.PanelApp(bridge, stack=stack_for(tmp_path, fos), maps_dir=maps,
                       runs_dir=str(tmp_path / 'runs'), tools_dir=str(tmp_path / 'tools'),
                       ports=lambda: list(ports), ps=lambda: ps, spawn=lambda f: f(),
-                      faces=faces)
+                      faces=faces, camera=FakeCamera())
     return app, bridge
 
 
@@ -405,7 +419,7 @@ def test_http_page_state_and_map(server):
 def test_http_buttons(server):
     base, app, bridge = server
     code, _, body = call(base + '/api/command', {'cmd': 'start'})
-    assert code == 409 and 'Power on' in json.loads(body)['error']
+    assert code == 409 and 'Press Start' in json.loads(body)['error']
     code, _, body = call(base + '/api/power/on', {'room': "Kumar's Lab"})
     assert code == 200 and json.loads(body)['ok']
     assert call(base + '/api/command', {'cmd': 'START'})[0] == 200
@@ -454,27 +468,30 @@ def test_http_faces_capture_review_keep(server, tmp_path):
     assert call(base + '/api/faces/keep', {'name': 'Dan', 'files': ['cam_0.jpg']})[0] == 200
     assert os.listdir(tmp_path / 'faces' / 'authorized_faces' / 'Dan') == ['cam_0.jpg']
     s = json.loads(call(base + '/api/state')[2])['faces']
-    assert s['review'] is None and s['people'] == [{'name': 'Dan', 'photos': 1, 'enrolled': 0}]
+    assert s['review'] is None
+    assert s['people'] == [{'name': 'Dan', 'photos': 1, 'enrolled': 0, 'cover': 'cam_0.jpg'}]
     assert s['database']['outdated']
     assert call(base + '/api/faces/rebuild', {})[0] == 200
+
+
+PAGE_ROUTES = ('/api/state', '/api/map.png', '/api/map?', '/api/runs', '/api/log', '/api/start',
+               '/api/power/off', '/api/command', '/api/click', '/api/relocalize', '/api/active',
+               '/api/maps', '/api/maps/rename', '/api/maps/delete', '/api/maps/add',
+               '/api/nopass', '/api/live_map.png', '/api/camera.jpg', '/api/faces/capture',
+               '/api/faces/stop', '/api/faces/keep', '/api/faces/discard', '/api/faces/rebuild',
+               '/api/faces/preview.jpg', '/api/faces/photo', '/api/faces/photos',
+               '/api/faces/delete_photo', '/api/faces/delete_person')
 
 
 def test_page_only_calls_api_routes_that_exist():
     with open(os.path.join(HERE, '..', 'web', 'index.html')) as f:
         page = f.read()
-    for route in ('/api/state', '/api/map.png', '/api/map?', '/api/runs', '/api/log',
-                  '/api/power/on', '/api/power/off', '/api/command', '/api/click',
-                  '/api/relocalize', '/api/faces/capture', '/api/faces/stop',
-                  '/api/faces/keep', '/api/faces/discard', '/api/faces/rebuild',
-                  '/api/faces/preview.jpg', '/api/faces/photo'):
+    for route in PAGE_ROUTES:
         assert route in page
     src = open(wl.__file__).read()
-    for route in ('/api/state', '/api/map.png', "'/api/map'", '/api/runs', '/api/log',
-                  '/api/power/on', '/api/power/off', '/api/command', '/api/click',
-                  '/api/relocalize', '/api/faces/capture', '/api/faces/stop',
-                  '/api/faces/keep', '/api/faces/discard', '/api/faces/rebuild',
-                  '/api/faces/preview.jpg', '/api/faces/photo'):
-        assert route in src
+    for route in PAGE_ROUTES:
+        assert ("'/api/map'" if route == '/api/map?' else route) in src
+    assert '/api/power/on' in src                   # still there for scripts / curl
 
 
 # ------------------------------------------------------------------------------ launch file
@@ -613,3 +630,225 @@ def test_starting_a_run_records_its_room(tmp_path):
     import json as _json
     assert _json.load(open(runs / 'meta_r1.json'))['room'] == 'Lab'
     sm.log_file.close()
+
+
+# ------------------------------------------------------------------------------ redesign
+def localized(app, ok=True):
+    """Write what auto-localize says into the run's log."""
+    with open(app.stack.log_path, 'a') as f:
+        f.write('[global_localize-9] global_localize: waiting for AMCL\n')
+        f.write('[global_localize-9] global_localize: sent /initialpose x 1.00 y 2.00\n' if ok
+                else '[global_localize-9] global_localize: not sending a pose\n')
+        f.flush()
+
+
+def test_start_from_off_powers_on_and_starts_once_localized(tmp_path, maps):
+    app, bridge = app_for(tmp_path, maps, FakeOS())
+    assert app.state()['active'] == "Kumar's Lab"            # the only room
+    msg = app.start()
+    assert 'Powering on' in msg and app.stack.state == 'starting'
+    assert app.state()['pending_start']
+    bridge.snap = {'status': {'state': 'idle'}, 'status_age': 0.2}
+    app.state()
+    assert bridge.sent == []                                  # not found itself yet
+    localized(app)
+    s = app.state()
+    assert bridge.sent == ['start'] and not s['pending_start']
+    app.state()
+    assert bridge.sent == ['start']                           # only once
+    assert app.start() == 'Starting laps' and bridge.sent == ['start', 'start']
+
+
+def test_start_from_off_gives_up_when_it_cannot_localize(tmp_path, maps):
+    app, bridge = app_for(tmp_path, maps, FakeOS())
+    app.start("Kumar's Lab")
+    bridge.snap = {'status': {'state': 'idle'}, 'status_age': 0.2}
+    localized(app, ok=False)
+    s = app.state()
+    assert bridge.sent == [] and not s['pending_start'] and 'Manual re-localize' in s['note']
+
+
+def test_stop_cancels_a_pending_start(tmp_path, maps):
+    app, bridge = app_for(tmp_path, maps, FakeOS())
+    app.start()
+    app.command('stop')
+    bridge.snap = {'status': {'state': 'idle'}, 'status_age': 0.2}
+    localized(app)
+    app.state()
+    assert bridge.sent == ['stop']                            # never started
+    app.power_off()
+    assert 'nothing is moving' in app.command('stop')         # Stop is always safe to press
+
+
+def test_start_refuses_another_room_while_running(tmp_path, maps):
+    (tmp_path / 'maps' / 'rooms.json').write_text(json.dumps({'rooms': [
+        {'name': "Kumar's Lab", 'map': 'lab'}, {'name': 'Hall', 'map': 'lab'}]}))
+    app, _ = app_for(tmp_path, maps, FakeOS())
+    app.start("Kumar's Lab")
+    with pytest.raises(RuntimeError, match='Power off'):
+        app.start('Hall')
+    with pytest.raises(RuntimeError, match='Power off'):
+        app.set_active('Hall')
+    app.power_off()
+    assert app.set_active('Hall') and app.state()['active'] == 'Hall'
+    with pytest.raises(ValueError):
+        app.set_active('Nowhere')
+
+
+def test_add_maps_a_new_room_with_the_explore_launch(tmp_path, maps):
+    app, bridge = app_for(tmp_path, maps, FakeOS())
+    with pytest.raises(RuntimeError, match='already exists'):
+        app.explore("kumar's lab")
+    with pytest.raises(ValueError):
+        app.explore('   ')
+    app.explore('Library')
+    cmd = app.stack.proc.cmd
+    assert cmd[3] == 'securebot_explore.launch.py'
+    for arg in ('room:=Library', f'esp32_port:={ESP}', 'rviz:=false', 'panel:=web',
+                'rooms:=false'):
+        assert arg in cmd
+    assert app.stack.recorder is None                         # laps-only recorder
+    assert not wl.other_stack_running(' '.join(cmd))
+    s = app.state()
+    assert s['active'] == 'Library' and s['stack']['kind'] == 'explore'
+    bridge.snap = {'status': {'state': 'idle', 'coverage': 0.1}, 'status_age': 0.2}
+    s = app.state()
+    assert bridge.kind == 'explore' and s['explore']['coverage'] == 0.1 and s['laps'] is None
+    assert 'press Start' in s['stack']['message']
+    app.start()
+    app.command('home')
+    assert 'map is saved' in app.command('stop')
+    assert bridge.sent == ['explore:start', 'explore:home', 'explore:stop']
+    with pytest.raises(RuntimeError, match='mapping'):
+        app.relocalize()
+    with pytest.raises(RuntimeError):
+        app.click(1, 2)
+    app.power_off()
+    assert bridge.sent[-1] == 'explore:stop'
+
+
+def test_maps_list_rename_and_delete(tmp_path, maps):
+    app, _ = app_for(tmp_path, maps, FakeOS())
+    (tmp_path / 'maps' / 'lab.nopass.json').write_text(json.dumps(
+        {'width': 0.1, 'lines': [[[0, 0], [1, 1]]]}))
+    [m] = app.maps()
+    assert m['name'] == "Kumar's Lab" and m['map'] == 'lab' and m['nopass'] == 1
+    assert m['width_m'] == 3.0 and m['height_m'] == 2.0
+    app.set_active("Kumar's Lab")
+    app.rename_room("Kumar's Lab", 'Lab 2')
+    assert [r['name'] for r in wl.load_rooms(maps)] == ['Lab 2']
+    assert app.state()['active'] == 'Lab 2'
+    with pytest.raises(ValueError):
+        app.rename_room('Nope', 'X')
+    app.power_on('Lab 2')
+    with pytest.raises(RuntimeError, match='Power off'):
+        app.delete_room('Lab 2')
+    with pytest.raises(RuntimeError, match='Power off'):
+        app.rename_room('Lab 2', 'Lab 3')
+    app.power_off()
+    msg = app.delete_room('Lab 2')
+    assert 'deleted' in msg.lower() and wl.load_rooms(maps) == []
+    trash = sorted(os.listdir(os.path.join(maps, 'deleted')))
+    assert [t.split('_', 2)[2] for t in trash] == ['lab.nopass.json', 'lab.pgm', 'lab.yaml']
+    assert not os.path.exists(os.path.join(maps, 'lab.yaml'))
+    assert app.state()['active'] is None
+    with pytest.raises(ValueError):
+        app.delete_room('Lab 2')
+
+
+def test_delete_keeps_a_map_another_room_still_uses(tmp_path, maps):
+    (tmp_path / 'maps' / 'rooms.json').write_text(json.dumps({'rooms': [
+        {'name': 'A', 'map': 'lab'}, {'name': 'B', 'map': 'lab'}]}))
+    app, _ = app_for(tmp_path, maps, FakeOS())
+    app.delete_room('A')
+    assert os.path.exists(os.path.join(maps, 'lab.yaml'))
+    assert [r['name'] for r in wl.load_rooms(maps)] == ['B']
+
+
+def test_nopass_lines_are_saved_and_a_running_room_reloads(tmp_path, maps):
+    app, bridge = app_for(tmp_path, maps, FakeOS())
+    room = "Kumar's Lab"
+    assert app.nopass_lines(room) == {'width': 0.1, 'lines': []}
+    app.save_nopass(room, [[[0, 0], [1, 0]], [[0, 1], [0, 2.5]]])
+    data = json.loads((tmp_path / 'maps' / 'lab.nopass.json').read_text())
+    assert data['lines'] == [[[0.0, 0.0], [1.0, 0.0]], [[0.0, 1.0], [0.0, 2.5]]]
+    assert app.nopass_lines(room)['lines'][1] == [[0.0, 1.0], [0.0, 2.5]]
+    assert bridge.sent == []                                  # nothing running
+    app.power_on(room)
+    assert 're-plans' in app.save_nopass(room, [])
+    assert bridge.sent == ['nopass reload'] and app.nopass_lines(room)['lines'] == []
+    for bad in ('x', [[1, 2]], [[[0, 0], [1, 'a']]], [[[0, 0], [float('nan'), 1]]],
+                [[[0, 0], [1, 1]]] * (wl.MAX_NOPASS + 1)):
+        with pytest.raises(ValueError):
+            app.save_nopass(room, bad)
+    with pytest.raises(ValueError):
+        app.save_nopass('Nowhere', [])
+
+
+def test_occupancy_grid_becomes_a_map_image():
+    # 3 x 2 grid, row 0 = bottom: free, wall, unknown / free, free, wall
+    png = wl.occupancy_png([0, 100, -1, 0, 0, 90], 3, 2)
+    img = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_GRAYSCALE)
+    assert img.tolist() == [[254, 254, 0], [254, 0, 205]]    # flipped: top row first
+
+
+def test_live_map_only_while_exploring(tmp_path, maps):
+    app, bridge = app_for(tmp_path, maps, FakeOS())
+    bridge.live_png = lambda: b'png'
+    assert app.live_map_png() is None
+    app.explore('Library')
+    assert app.live_map_png() == b'png'
+    app.power_off()
+    assert app.live_map_png() is None                         # mapping over
+
+
+def test_http_new_endpoints(server):
+    base, app, bridge = server
+    code, _, body = call(base + '/api/maps')
+    assert code == 200 and json.loads(body)[0]['name'] == "Kumar's Lab"
+    assert call(base + '/api/nopass', {'room': "Kumar's Lab",
+                                       'lines': [[[0, 0], [1, 1]]]})[0] == 200
+    code, _, body = call(base + "/api/nopass?room=Kumar%27s%20Lab")
+    assert json.loads(body)['lines'] == [[[0.0, 0.0], [1.0, 1.0]]]
+    assert call(base + '/api/nopass', {'room': "Kumar's Lab", 'lines': 'x'})[0] == 400
+    code, ctype, body = call(base + '/api/camera.jpg')
+    assert code == 200 and ctype == 'image/jpeg'
+    app.camera.why = 'The live face node has the camera'
+    code, _, body = call(base + '/api/camera.jpg')
+    assert code == 409 and 'live face' in json.loads(body)['error']
+    assert call(base + '/api/live_map.png')[0] == 404
+    assert call(base + '/api/active', {'room': "Kumar's Lab"})[0] == 200
+    assert call(base + '/api/maps/rename', {'old': "Kumar's Lab", 'new': ''})[0] == 400
+    assert call(base + '/api/maps/add', {'name': 'Library'})[0] == 200
+    assert app.stack.kind == 'explore'
+    assert call(base + '/api/maps/add', {'name': 'Other'})[0] == 409      # already on
+    assert call(base + '/api/power/off', {})[0] == 200
+    assert call(base + '/api/start', {})[0] == 200 and app.stack.kind == 'laps'
+    assert call(base + '/api/power/off', {})[0] == 200
+    assert call(base + '/api/maps/rename', {'old': "Kumar's Lab", 'new': 'Lab'})[0] == 200
+    assert call(base + '/api/maps/delete', {'name': 'Lab'})[0] == 200
+    assert json.loads(call(base + '/api/maps')[2]) == []
+    s = json.loads(call(base + '/api/state')[2])
+    assert s['battery'] is None and 'camera' in s
+
+
+def test_http_faces_manage(server, tmp_path):
+    base, app, _ = server
+    d = tmp_path / 'faces' / 'authorized_faces' / 'Ana'
+    d.mkdir(parents=True)
+    for f in ('1.jpg', '2.jpg'):
+        (d / f).write_bytes(b'jpg')
+    code, _, body = call(base + '/api/faces/photos?name=Ana')
+    assert code == 200 and json.loads(body) == ['1.jpg', '2.jpg']
+    assert call(base + '/api/faces/photos?name=..')[0] == 404
+    code, ctype, _ = call(base + '/api/faces/photo?kind=enrolled&name=Ana&file=1.jpg')
+    assert code == 200 and ctype == 'image/jpeg'
+    assert call(base + '/api/faces/delete_photo', {'name': 'Ana', 'file': '1.jpg'})[0] == 200
+    assert os.listdir(d) == ['2.jpg']
+    assert call(base + '/api/faces/capture', {'name': 'Ana', 'count': 5,
+                                              'replace': True})[0] == 200
+    assert app.faces.replace == 'Ana'
+    assert call(base + '/api/faces/delete_person', {'name': 'Ana'})[0] == 409   # capturing
+    app.faces.job['proc'].end(0)                     # no photos taken -> capture over
+    assert call(base + '/api/faces/delete_person', {'name': 'Ana'})[0] == 200
+    assert not d.exists()

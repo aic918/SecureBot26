@@ -3,211 +3,475 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>SecureBot Panel</title>
+<meta name="theme-color" content="#0b1017">
+<title>SecureBot</title>
 <style>
   :root {
-    --bg: #f4f5f7; --card: #ffffff; --text: #1d2125; --muted: #5e6670; --line: #dde1e6;
-    --go: #1f883d; --stop: #cf222e; --home: #3f48cc; --warn: #b35900; --off: #6e7781;
-    --robot: #0b7285; --lane: rgba(63, 72, 204, .35); --current: #e8590c; --box: #fd7e14;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) {
-      --bg: #0f1216; --card: #191d23; --text: #e6e9ed; --muted: #9aa3ad; --line: #2c323a;
-      --robot: #3bc9db; --lane: rgba(140, 150, 255, .45);
-    }
+    --bg: #0b1017; --panel: #121a24; --panel2: #18222f; --line: #243245; --text: #e3e9f0;
+    --muted: #8a99ab; --accent: #22c3a6; --go: #2fb76b; --stop: #e5484d; --home: #4c7dff;
+    --warn: #f5a524; --robot: #22c3a6; --lane: rgba(76, 125, 255, .55); --current: #ff8a3d;
+    --box: #ff8a3d; --nopass: #000; --nopass-edge: #f5a524;
+    --radius: 12px;
   }
   * { box-sizing: border-box; }
+  html, body { height: 100%; }
   body { margin: 0; background: var(--bg); color: var(--text);
-         font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-  header { display: flex; align-items: center; gap: 12px; padding: 12px 16px;
-           border-bottom: 1px solid var(--line); background: var(--card); }
-  header h1 { font-size: 18px; margin: 0; flex: 1; }
-  .pill { padding: 4px 10px; border-radius: 999px; font-size: 13px; font-weight: 600;
-          color: #fff; background: var(--off); white-space: nowrap; }
-  main { display: grid; gap: 16px; padding: 16px; max-width: 1200px; margin: 0 auto;
-         grid-template-columns: minmax(0, 1fr); }
-  @media (min-width: 900px) { main { grid-template-columns: 340px minmax(0, 1fr); } }
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
-          padding: 16px; }
-  .card h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .04em;
-             color: var(--muted); margin: 0 0 12px; }
-  label { display: block; font-size: 14px; color: var(--muted); margin: 10px 0 4px; }
-  select, input { width: 100%; font-size: 16px; padding: 10px; border-radius: 8px;
-                  border: 1px solid var(--line); background: var(--bg); color: var(--text); }
-  button { font: inherit; font-weight: 700; border: 0; border-radius: 10px; cursor: pointer;
-           color: #fff; padding: 14px; width: 100%; }
-  button:disabled { opacity: .35; cursor: not-allowed; }
-  .big { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  .big button { font-size: 20px; padding: 22px 8px; }
-  .b-go { background: var(--go); } .b-stop { background: var(--stop); }
-  .b-home { background: var(--home); } .b-off { background: var(--off); }
-  .b-plain { background: transparent; color: var(--text); border: 1px solid var(--line); }
-  .row { display: flex; gap: 10px; margin-top: 10px; }
-  .msg { margin-top: 12px; font-size: 15px; min-height: 1.4em; }
-  .err { color: var(--stop); }
-  dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0;
-       font-size: 15px; }
-  dt { color: var(--muted); } dd { margin: 0; font-variant-numeric: tabular-nums; }
-  #mapwrap { position: relative; width: 100%; aspect-ratio: 4 / 3; background: var(--bg);
-             border-radius: 8px; overflow: hidden; touch-action: manipulation; }
-  canvas { width: 100%; height: 100%; display: block; }
-  .legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 13px; color: var(--muted);
-            margin-top: 8px; }
-  .sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px;
-        vertical-align: -1px; margin-right: 4px; }
-  pre { background: var(--bg); border-radius: 8px; padding: 10px; font-size: 12px;
-        max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-word;
-        margin: 0; }
-  details summary { cursor: pointer; color: var(--muted); font-size: 14px; }
-  ul.runs { list-style: none; padding: 0; margin: 8px 0 0; font-size: 14px; }
-  ul.runs li { padding: 6px 0; border-top: 1px solid var(--line); }
-  ul.runs a { color: var(--home); margin-right: 8px; }
-  .hint { font-size: 14px; color: var(--muted); margin: 10px 0 0; }
-  .people { list-style: none; padding: 0; margin: 0; font-size: 15px; }
-  .people li { display: flex; justify-content: space-between; gap: 8px; padding: 6px 0;
-               border-top: 1px solid var(--line); }
-  .people li:first-child { border-top: 0; }
-  .people .n { color: var(--muted); font-variant-numeric: tabular-nums; }
-  .warn { color: var(--warn); }
-  #f-preview { width: 100%; max-width: 480px; display: block; border-radius: 8px;
-               background: var(--bg); margin-top: 12px; aspect-ratio: 16 / 9; object-fit: cover; }
-  .bar { height: 8px; border-radius: 4px; background: var(--line); margin-top: 10px;
+         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  button, input, select { font: inherit; color: inherit; }
+  [hidden] { display: none !important; }
+
+  /* ---- header and menu ---- */
+  header { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 12px;
+           padding: 10px 14px; background: rgba(11, 16, 23, .92); backdrop-filter: blur(6px);
+           border-bottom: 1px solid var(--line); }
+  .icon-btn { width: 40px; height: 40px; border-radius: 10px; border: 1px solid var(--line);
+              background: var(--panel); cursor: pointer; display: grid; place-items: center;
+              flex: none; padding: 0; }
+  .icon-btn:hover { border-color: var(--muted); }
+  .icon-btn svg { width: 20px; height: 20px; stroke: var(--text); }
+  header h1 { margin: 0; font-size: 19px; letter-spacing: .02em; font-weight: 750; }
+  header h1 b { color: var(--accent); }
+  #page-title { color: var(--muted); font-size: 15px; }
+  .grow { flex: 1; }
+  #roompick { max-width: 260px; }
+  .pill { padding: 5px 11px; border-radius: 999px; font-size: 13px; font-weight: 650;
+          background: var(--panel2); border: 1px solid var(--line); white-space: nowrap;
+          display: inline-flex; align-items: center; gap: 7px; }
+  .pill i { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+
+  #scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, .5); z-index: 40; }
+  #drawer { position: fixed; top: 0; bottom: 0; left: 0; width: 290px; max-width: 85vw;
+            background: var(--panel); border-right: 1px solid var(--line); z-index: 41;
+            padding: 14px; transform: translateX(-102%); transition: transform .18s ease;
+            display: flex; flex-direction: column; gap: 4px; }
+  #drawer.open { transform: none; }
+  #drawer h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em;
+               color: var(--muted); margin: 6px 6px 10px; }
+  #drawer a { display: flex; align-items: center; gap: 12px; padding: 12px; border-radius: 10px;
+              color: var(--text); text-decoration: none; font-weight: 600; }
+  #drawer a:hover { background: var(--panel2); }
+  #drawer a.on { background: var(--panel2); box-shadow: inset 3px 0 0 var(--accent); }
+  #drawer a svg { width: 20px; height: 20px; stroke: var(--muted); flex: none; }
+
+  /* wide screens: a navbar in the header; the ≡ menu is for phones and small tablets */
+  #topnav { display: none; gap: 4px; margin-left: 8px; }
+  #topnav a { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 9px;
+              color: var(--muted); text-decoration: none; font-weight: 600; white-space: nowrap; }
+  #topnav a:hover { background: var(--panel2); color: var(--text); }
+  #topnav a.on { background: var(--panel2); color: var(--text);
+                 box-shadow: inset 0 -2px 0 var(--accent); }
+  #topnav a svg { width: 18px; height: 18px; stroke: currentColor; flex: none; }
+  @media (min-width: 900px) {
+    #topnav { display: flex; }
+    #menubtn, #drawer, #scrim, #page-title { display: none !important; }
+  }
+  @media (min-width: 900px) and (max-width: 1100px) { #roompick { max-width: 180px; } }
+
+  main { padding: 16px; max-width: 1280px; margin: 0 auto; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
+  .card-h { font-size: 12px; text-transform: uppercase; letter-spacing: .08em;
+            color: var(--muted); margin: 0 0 10px; font-weight: 650; }
+
+  /* ---- buttons ---- */
+  .btn { border: 1px solid var(--line); background: var(--panel2); border-radius: 10px;
+         padding: 11px 14px; cursor: pointer; font-weight: 650; display: inline-flex;
+         align-items: center; justify-content: center; gap: 8px; text-align: center; }
+  .btn:hover:not(:disabled) { border-color: var(--muted); }
+  .btn:disabled { opacity: .38; cursor: not-allowed; }
+  .btn svg { width: 18px; height: 18px; stroke: currentColor; flex: none; }
+  .btn.go { background: var(--go); border-color: transparent; color: #04120a; }
+  .btn.stop { background: var(--stop); border-color: transparent; color: #fff; }
+  .btn.home { background: var(--home); border-color: transparent; color: #fff; }
+  .btn.accent { background: var(--accent); border-color: transparent; color: #03140f; }
+  .btn.danger { color: #ff8f92; }
+  .btn.on { border-color: var(--accent); color: var(--accent); }
+  .btn.big { padding: 16px 12px; font-size: 17px; }
+
+  /* ---- main page ---- */
+  .robot { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
+  @media (min-width: 900px) { .robot { grid-template-columns: 260px minmax(0, 1fr); } }
+  .controls { padding: 14px; display: flex; flex-direction: column; gap: 10px;
+              align-self: start; }
+  .controls .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .controls hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; width: 100%; }
+  .status { margin-top: 4px; font-size: 14px; display: grid; gap: 6px; }
+  .status div { display: flex; justify-content: space-between; gap: 10px; }
+  .status span:first-child { color: var(--muted); }
+  .status span:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+  .note { font-size: 14px; color: var(--warn); min-height: 0; }
+  .viewcol { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .view { position: relative; overflow: hidden; }
+  .stage { position: relative; height: min(68vh, 640px); min-height: 320px; background: #0e141c; }
+  .stage canvas, .stage img { position: absolute; inset: 0; width: 100%; height: 100%;
+                              display: block; }
+  .stage img { object-fit: contain; background: #000; }
+  .stage .empty { position: absolute; inset: 0; display: grid; place-items: center;
+                  color: var(--muted); text-align: center; padding: 20px; }
+  .bat { position: absolute; top: 10px; right: 10px; z-index: 2; }
+  .bat svg { width: 18px; height: 18px; stroke: var(--muted); }
+  .over-l { position: absolute; top: 10px; left: 10px; z-index: 2; max-width: 70%; }
+  .viewbar { display: flex; align-items: center; gap: 8px; padding: 10px 12px; flex-wrap: wrap;
+             border-top: 1px solid var(--line); }
+  .viewbar .label { color: var(--muted); font-size: 13px; margin-right: 4px; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 10px;
          overflow: hidden; }
-  .bar i { display: block; height: 100%; width: 0; background: var(--go); transition: width .3s; }
-  .fgrid { display: grid; gap: 10px; margin-top: 12px;
-           grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
-  .tile { border: 2px solid var(--line); border-radius: 10px; padding: 6px; font-size: 12px;
-          cursor: pointer; display: block; margin: 0; color: var(--text); }
-  .tile.flagged { border-color: var(--stop); }
-  .tile.off { opacity: .55; }
-  .tile img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px;
-              display: block; }
-  .tile input { width: auto; margin: 6px 6px 0 0; vertical-align: -2px; }
-  .tile .why { color: var(--stop); margin-top: 4px; }
-  .tile .note { color: var(--muted); margin-top: 2px; }
-  h3 { font-size: 15px; margin: 16px 0 4px; }
-  .estop { position: fixed; right: 16px; bottom: 16px; width: auto; border-radius: 999px;
-           padding: 16px 22px; font-size: 18px; box-shadow: 0 4px 16px rgba(0,0,0,.3);
-           display: none; }
+  .seg button { border: 0; background: transparent; padding: 8px 14px; cursor: pointer;
+                font-weight: 650; color: var(--muted); }
+  .seg button.on { background: var(--panel2); color: var(--accent); }
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--muted); }
+  .sw { display: inline-block; width: 11px; height: 11px; border-radius: 3px;
+        vertical-align: -1px; margin-right: 5px; }
+  .logs { padding: 0; }
+  .logs summary { cursor: pointer; padding: 12px 14px; font-weight: 650; list-style: none;
+                  display: flex; align-items: center; gap: 8px; }
+  .logs summary::-webkit-details-marker { display: none; }
+  .logs summary .chev { transition: transform .15s; stroke: var(--muted); }
+  .logs[open] summary .chev { transform: rotate(180deg); }
+  .logs summary small { color: var(--muted); font-weight: 400; }
+  .logs .inner { padding: 0 14px 14px; }
+  pre { background: #0a0f15; border: 1px solid var(--line); border-radius: 8px; padding: 10px;
+        font-size: 12px; max-height: 260px; overflow: auto; white-space: pre-wrap;
+        word-break: break-word; margin: 0; }
+  ul.runs { list-style: none; padding: 0; margin: 10px 0 0; font-size: 14px; }
+  ul.runs li { padding: 8px 0; border-top: 1px solid var(--line); display: flex; gap: 10px;
+               flex-wrap: wrap; align-items: baseline; }
+  ul.runs .when { min-width: 180px; }
+  ul.runs .room { color: var(--muted); flex: 1; }
+  ul.runs a { color: var(--home); }
+
+  /* ---- manager pages ---- */
+  .page-h { display: flex; align-items: center; gap: 12px; margin: 2px 0 14px; flex-wrap: wrap; }
+  .page-h h2 { margin: 0; font-size: 22px; }
+  .page-h p { margin: 0; color: var(--muted); flex-basis: 100%; }
+  .tiles { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
+  .tile { background: var(--panel); border: 2px solid var(--line); border-radius: var(--radius);
+          padding: 10px; cursor: pointer; user-select: none; transition: border-color .12s; }
+  .tile:hover { border-color: #3a4b63; }
+  .tile.sel { border-color: var(--accent); }
+  .tiles.picking .tile { border-color: var(--warn); animation: pulse 1.3s ease-in-out infinite; }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 4px rgba(245, 165, 36, .18); } }
+  .tile .thumb { aspect-ratio: 1; border-radius: 8px; background: #0e141c; overflow: hidden;
+                 display: grid; place-items: center; }
+  .tile .thumb canvas, .tile .thumb img { width: 100%; height: 100%; object-fit: cover;
+                                          display: block; }
+  .tile .name { margin-top: 8px; font-weight: 650; overflow: hidden; text-overflow: ellipsis;
+                white-space: nowrap; }
+  .tile .meta { color: var(--muted); font-size: 12px; }
+  .tile .badge { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px;
+                 background: rgba(34, 195, 166, .15); color: var(--accent); margin-left: 6px;
+                 vertical-align: 1px; }
+  .actions { position: sticky; bottom: 0; margin-top: 18px; padding: 12px;
+             background: var(--panel); border: 1px solid var(--line);
+             border-radius: var(--radius); display: flex; gap: 10px; flex-wrap: wrap;
+             align-items: center; }
+  .actions .hint { color: var(--muted); font-size: 14px; flex: 1; min-width: 160px; }
+  .banner { padding: 12px 14px; border-radius: var(--radius); border: 1px solid var(--line);
+            background: var(--panel); margin-bottom: 14px; display: flex; gap: 12px;
+            align-items: center; flex-wrap: wrap; }
+  .banner.warn { border-color: rgba(245, 165, 36, .5); }
+  .banner .txt { flex: 1; min-width: 200px; }
+  .empty-tiles { color: var(--muted); padding: 30px 0; }
+
+  /* ---- face capture / photos ---- */
+  .form { display: grid; gap: 12px; max-width: 520px; }
+  label { display: grid; gap: 5px; font-size: 14px; color: var(--muted); }
+  input[type=text], input[type=number], select {
+    width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line);
+    background: var(--panel2); color: var(--text); }
+  #cap-preview { width: 100%; max-width: 560px; aspect-ratio: 16 / 9; object-fit: cover;
+                 border-radius: 10px; background: #000; display: block; }
+  .bar { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden;
+         max-width: 560px; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--accent);
+           transition: width .3s; }
+  .pgrid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+  .photo { position: relative; background: var(--panel); border: 2px solid var(--line);
+           border-radius: 10px; padding: 6px; font-size: 12px; }
+  .photo img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px;
+               display: block; }
+  .photo .x { position: absolute; top: 10px; right: 10px; width: 30px; height: 30px;
+              border-radius: 50%; border: 0; background: rgba(0, 0, 0, .7); color: #fff;
+              cursor: pointer; font-size: 16px; line-height: 1; }
+  .photo .x:hover { background: var(--stop); }
+  .photo.flagged { border-color: var(--stop); }
+  .photo.off { opacity: .5; }
+  .photo label { display: flex; align-items: center; gap: 6px; margin-top: 6px; color: var(--text);
+                 cursor: pointer; }
+  .photo .why { color: #ff8f92; margin-top: 3px; }
+  .photo .noteline { color: var(--muted); margin-top: 2px; }
+
+  /* ---- fullscreen map (viewer and no-pass editor) ---- */
+  #full { position: fixed; inset: 0; z-index: 30; background: var(--bg); display: flex;
+          flex-direction: column; }
+  #full .bar2 { display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+                border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+  #full .bar2 h3 { margin: 0 6px; font-size: 17px; }
+  #full .bar2 .info { color: var(--muted); font-size: 13px; }
+  #full .stage { flex: 1; height: auto; min-height: 0; }
+  #full .help { position: absolute; left: 12px; bottom: 12px; z-index: 2; font-size: 13px;
+                color: var(--muted); background: rgba(11, 16, 23, .85); padding: 8px 10px;
+                border-radius: 8px; border: 1px solid var(--line); max-width: 460px; }
+  .stage.draw canvas { cursor: crosshair; }
+  .stage.move canvas { cursor: grab; }
+
+  .estop { position: fixed; right: 16px; bottom: 16px; z-index: 25; border-radius: 999px;
+           padding: 16px 22px; font-size: 18px; box-shadow: 0 6px 20px rgba(0, 0, 0, .5); }
+
+  /* ---- dialogs and toast ---- */
+  #modal { position: fixed; inset: 0; z-index: 60; background: rgba(0, 0, 0, .55);
+           display: grid; place-items: center; padding: 16px; }
+  #modal .box { width: 100%; max-width: 440px; background: var(--panel); padding: 18px;
+                border: 1px solid var(--line); border-radius: 14px;
+                box-shadow: 0 20px 60px rgba(0, 0, 0, .5); }
+  #modal h3 { margin: 0 0 8px; font-size: 18px; }
+  #modal p { margin: 0 0 12px; color: var(--muted); }
+  #modal .row { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap;
+                margin-top: 16px; }
+  #modal .err { color: #ff8f92; font-size: 14px; margin-top: 8px; min-height: 1em; }
+  #toast { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 70;
+           background: var(--panel2); border: 1px solid var(--line); padding: 11px 16px;
+           border-radius: 10px; box-shadow: 0 10px 30px rgba(0, 0, 0, .45); max-width: 92vw;
+           font-size: 14px; }
+  #toast.err { border-color: var(--stop); color: #ffb3b5; }
 </style>
 </head>
 <body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-menu" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+    <symbol id="i-robot" viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M9 13h.01M15 13h.01M2 13v3M22 13v3"/></symbol>
+    <symbol id="i-map" viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2zM9 4v14M15 6v14"/></symbol>
+    <symbol id="i-face" viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="9" r="4"/><path d="M4 20c1.5-3.5 4.5-5 8-5s6.5 1.5 8 5"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linejoin="round"><path d="M7 5v14l12-7z"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24" fill="none" stroke-width="2"><rect x="6" y="6" width="12" height="12" rx="1.5"/></symbol>
+    <symbol id="i-swap" viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h13l-3-3M20 16H7l3 3"/></symbol>
+    <symbol id="i-target" viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></symbol>
+    <symbol id="i-home" viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11 12 4l8 7v9h-5v-6H9v6H4z"/></symbol>
+    <symbol id="i-power" viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round"><path d="M12 3v8M6.3 7.3a8 8 0 1 0 11.4 0"/></symbol>
+    <symbol id="i-bat" viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="7" width="16" height="10" rx="2"/><path d="M22 11v2"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></symbol>
+    <symbol id="i-fit" viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></symbol>
+  </defs>
+</svg>
+
 <header>
-  <h1>SecureBot</h1>
-  <span id="pill" class="pill">Connecting…</span>
+  <button class="icon-btn" id="menubtn" title="Menu" aria-label="Menu"><svg><use href="#i-menu"/></svg></button>
+  <h1>Secure<b>Bot</b></h1>
+  <span id="page-title"></span>
+  <nav id="topnav" aria-label="Pages">
+    <a href="#/" data-nav="robot"><svg><use href="#i-robot"/></svg>Robot</a>
+    <a href="#/faces" data-nav="faces"><svg><use href="#i-face"/></svg>Facial recognition manager</a>
+    <a href="#/maps" data-nav="maps"><svg><use href="#i-map"/></svg>Map manager</a>
+  </nav>
+  <span class="grow"></span>
+  <select id="roompick" title="Room on the main screen" aria-label="Room"></select>
+  <span class="pill" id="pill"><i></i><span>Connecting…</span></span>
 </header>
+
+<div id="scrim" hidden></div>
+<nav id="drawer" aria-label="Menu">
+  <h2>Menu</h2>
+  <a href="#/" data-nav="robot"><svg><use href="#i-robot"/></svg>Robot</a>
+  <a href="#/faces" data-nav="faces"><svg><use href="#i-face"/></svg>Facial recognition manager</a>
+  <a href="#/maps" data-nav="maps"><svg><use href="#i-map"/></svg>Map manager</a>
+</nav>
+
 <main>
-  <div style="display:grid; gap:16px; align-content:start">
-    <section class="card" id="powercard">
-      <h2>1 · Robot software</h2>
-      <label for="room">Room</label>
-      <select id="room"></select>
-      <details style="margin-top:10px">
-        <summary>Options</summary>
-        <label for="home">Home point (x,y on the map) — blank: where you press Start</label>
-        <input id="home" placeholder="e.g. 0.18,0.04" inputmode="decimal">
-        <label for="rounds">Rounds — 0 keeps lapping until Stop</label>
-        <input id="rounds" type="number" min="0" value="0" inputmode="numeric">
-      </details>
-      <div class="row">
-        <button id="on" class="b-go">Power on</button>
-        <button id="off" class="b-off">Power off</button>
+  <!-- ================= Robot (main screen) ================= -->
+  <section id="p-robot" class="robot">
+    <aside class="card controls">
+      <div class="card-h">Controls</div>
+      <div class="pair">
+        <button class="btn go big" id="c-start"><svg><use href="#i-play"/></svg>Start</button>
+        <button class="btn stop big" id="c-stop"><svg><use href="#i-stop"/></svg>Stop</button>
       </div>
-      <div id="stackmsg" class="msg"></div>
-    </section>
+      <button class="btn" id="c-swap"><svg><use href="#i-swap"/></svg><span>Swap to camera</span></button>
+      <button class="btn" id="c-reloc"><svg><use href="#i-target"/></svg>Manual re-localize</button>
+      <button class="btn home" id="c-home"><svg><use href="#i-home"/></svg>Return home</button>
+      <hr>
+      <div class="status">
+        <div><span>Doing</span><span id="s-state">—</span></div>
+        <div id="s-msg-row"><span>Now</span><span id="s-msg">—</span></div>
+        <div><span id="s-prog-k">Progress</span><span id="s-prog">—</span></div>
+        <div><span>Position</span><span id="s-loc">—</span></div>
+        <div><span>ESP32</span><span id="s-esp">—</span></div>
+      </div>
+      <div class="note" id="s-note"></div>
+      <hr>
+      <button class="btn danger" id="c-off"><svg><use href="#i-power"/></svg>Power off</button>
+    </aside>
 
-    <section class="card">
-      <h2>2 · Drive</h2>
-      <div class="big">
-        <button id="start" class="b-go">Start</button>
-        <button id="stop" class="b-stop">Stop</button>
-        <button id="gohome" class="b-home" style="grid-column: span 2">Go home</button>
-      </div>
-      <div class="row">
-        <button id="reloc" class="b-plain">Re-localize</button>
-      </div>
-      <div id="cmdmsg" class="msg"></div>
-    </section>
-
-    <section class="card">
-      <h2>Status</h2>
-      <dl>
-        <dt>Laps</dt><dd id="s-state">—</dd>
-        <dt>Doing</dt><dd id="s-msg">—</dd>
-        <dt>Round / lane</dt><dd id="s-loop">—</dd>
-        <dt>Coverage</dt><dd id="s-cov">—</dd>
-        <dt>Position</dt><dd id="s-loc">—</dd>
-        <dt>ESP32</dt><dd id="s-esp">—</dd>
-      </dl>
-    </section>
-  </div>
-
-  <div style="display:grid; gap:16px; align-content:start">
-    <section class="card">
-      <h2>Map</h2>
-      <div id="mapwrap"><canvas id="map"></canvas></div>
-      <div class="legend">
-        <span><i class="sw" style="background:var(--robot)"></i>Robot</span>
-        <span><i class="sw" style="background:var(--lane)"></i>Planned lanes</span>
-        <span><i class="sw" style="background:var(--current)"></i>Driving now</span>
-        <span><i class="sw" style="background:var(--box)"></i>Box (tap to remove)</span>
-        <span><i class="sw" style="background:var(--home)"></i>Home</span>
-      </div>
-    </section>
-    <section class="card" id="facescard">
-      <h2>Faces</h2>
-      <ul class="people" id="f-people"></ul>
-      <div id="f-db" class="msg"></div>
-      <details id="f-add">
-        <summary>Add or update a person</summary>
-        <label for="f-name">Name</label>
-        <input id="f-name" list="f-names" placeholder="e.g. Daniel" autocomplete="off">
-        <datalist id="f-names"></datalist>
-        <label for="f-count">Photos to take</label>
-        <input id="f-count" type="number" min="3" max="40" value="15" inputmode="numeric">
-        <div class="row">
-          <button id="f-capture" class="b-go">Start capture</button>
-          <button id="f-stop" class="b-stop">Stop</button>
+    <div class="viewcol">
+      <div class="card view">
+        <div class="stage" id="mainstage">
+          <canvas id="maincanvas"></canvas>
+          <img id="camimg" alt="Robot camera" hidden>
+          <div class="empty" id="mainempty" hidden></div>
+          <span class="pill bat" id="bat" title="No battery sensor on the robot yet"><svg><use href="#i-bat"/></svg><span>—%</span></span>
+          <span class="pill over-l" id="mode-pill" hidden></span>
         </div>
-        <p class="hint">Only that person in view, about 1–1.5 m from the camera. Look at the
-          camera, then slowly turn left, right, up and down until the bar is full.</p>
-        <div id="f-live" hidden>
-          <img id="f-preview" alt="Camera view">
-          <div class="bar"><i id="f-bar"></i></div>
-          <div id="f-hint" class="msg"></div>
-        </div>
-      </details>
-      <div id="f-review" hidden>
-        <h3>Check the photos of <span id="f-rname"></span></h3>
-        <p class="hint">Ticked photos are added. Red ones were flagged (reason underneath).
-          Also untick any that are blurry, cut off or of someone else.</p>
-        <div id="f-grid" class="fgrid"></div>
-        <div class="row">
-          <button id="f-keep" class="b-go">Add ticked photos</button>
-          <button id="f-discard" class="b-plain">Discard all</button>
+        <div class="viewbar">
+          <span class="label">View</span>
+          <div class="seg" id="viewseg">
+            <button data-v="map" class="on">Map</button><button data-v="cam">Camera</button>
+          </div>
+          <button class="btn" id="v-fit" title="Fit the map"><svg><use href="#i-fit"/></svg>Fit</button>
+          <span class="grow"></span>
+          <div class="legend" id="legend">
+            <span><i class="sw" style="background:var(--robot)"></i>Robot</span>
+            <span><i class="sw" style="background:var(--lane)"></i>Lanes</span>
+            <span><i class="sw" style="background:var(--current)"></i>Driving</span>
+            <span><i class="sw" style="background:var(--box)"></i>Box (tap to remove)</span>
+            <span><i class="sw" style="background:var(--home)"></i>Home</span>
+            <span><i class="sw" style="background:#000;outline:2px solid var(--nopass-edge)"></i>No-pass</span>
+          </div>
         </div>
       </div>
-      <div class="row">
-        <button id="f-rebuild" class="b-home">Rebuild face database</button>
-      </div>
-      <div id="f-msg" class="msg"></div>
-      <pre id="f-log" hidden style="margin-top:10px"></pre>
-    </section>
-    <section class="card">
-      <details>
-        <summary>Log and past runs</summary>
-        <pre id="log" style="margin-top:10px"></pre>
-        <ul class="runs" id="runs"></ul>
+
+      <details class="card logs" id="logs">
+        <summary><svg class="chev" width="16" height="16"><use href="#i-chev"/></svg>Logs
+          <small>(last 10 runs)</small></summary>
+        <div class="inner">
+          <div class="card-h" style="margin-top:4px">This run</div>
+          <pre id="log">No log yet.</pre>
+          <ul class="runs" id="runs"></ul>
+        </div>
       </details>
-    </section>
-  </div>
+    </div>
+  </section>
+
+  <!-- ================= Map manager ================= -->
+  <section id="p-maps" hidden>
+    <div class="page-h"><h2>Map manager</h2>
+      <p>Click a map to select it, double-click to see it full screen.</p></div>
+    <div class="tiles" id="maptiles"></div>
+    <div class="actions">
+      <span class="hint" id="maphint">Select a map.</span>
+      <button class="btn" id="m-use">Show on main screen</button>
+      <button class="btn" id="m-rename">Rename</button>
+      <button class="btn danger" id="m-delete">Delete</button>
+      <button class="btn accent" id="m-add">Add</button>
+      <button class="btn" id="m-edit">Edit</button>
+    </div>
+  </section>
+
+  <!-- ================= Facial recognition manager ================= -->
+  <section id="p-faces" hidden>
+    <div class="page-h"><h2>Facial recognition manager</h2>
+      <p>People the robot treats as authorized. Click to select, double-click to open their photos.</p></div>
+    <div class="banner" id="f-banner" hidden>
+      <span class="txt" id="f-bannertxt"></span>
+      <button class="btn accent" id="f-rebuild">Update face database</button>
+    </div>
+    <div class="banner warn" id="f-waiting" hidden>
+      <span class="txt" id="f-waitingtxt"></span>
+      <button class="btn accent" id="f-review">Review photos</button>
+    </div>
+    <pre id="f-log" hidden style="margin-bottom:14px"></pre>
+    <div class="tiles" id="facetiles"></div>
+    <div class="actions">
+      <span class="hint" id="facehint">Select a person.</span>
+      <button class="btn accent" id="f-add">Add person</button>
+      <button class="btn" id="f-view">View captures</button>
+      <button class="btn danger" id="f-delete">Delete person</button>
+    </div>
+  </section>
+
+  <!-- ================= One person's captures ================= -->
+  <section id="p-person" hidden>
+    <div class="page-h">
+      <button class="icon-btn" id="pp-back" title="Back"><svg><use href="#i-back"/></svg></button>
+      <h2 id="pp-name"></h2>
+      <span class="grow"></span>
+      <button class="btn accent" id="pp-retake">Retake photos</button>
+      <p id="pp-info"></p>
+    </div>
+    <div class="pgrid" id="pp-grid"></div>
+  </section>
+
+  <!-- ================= Capture (add person / retake) ================= -->
+  <section id="p-capture" hidden>
+    <div class="page-h">
+      <button class="icon-btn" id="cp-back" title="Back"><svg><use href="#i-back"/></svg></button>
+      <h2 id="cp-title">Add person</h2>
+    </div>
+    <div class="card" style="padding:16px">
+      <div class="form" id="cp-form">
+        <label>Name<input type="text" id="cp-name" placeholder="e.g. Daniel" autocomplete="off"></label>
+        <label>Photos to take<input type="number" id="cp-count" min="3" max="40" value="15"></label>
+        <p style="margin:0;color:var(--muted);font-size:14px">Only that person in view, about
+          1–1.5 m from the camera. Look at the camera, then slowly turn left, right, up and
+          down until the bar is full.</p>
+        <div style="display:flex;gap:10px">
+          <button class="btn go" id="cp-start">Start capture</button>
+          <button class="btn stop" id="cp-stop">Stop</button>
+        </div>
+      </div>
+      <div id="cp-live" hidden style="margin-top:14px;display:grid;gap:10px">
+        <img id="cap-preview" alt="Camera view">
+        <div class="bar"><i id="cp-bar"></i></div>
+        <div id="cp-hint"></div>
+      </div>
+      <div id="cp-busy" hidden style="margin-top:14px;color:var(--muted)"></div>
+      <div id="cp-review" hidden style="margin-top:6px">
+        <h3 style="margin:8px 0 4px">Check the photos of <span id="cp-rname"></span></h3>
+        <p style="margin:0 0 12px;color:var(--muted);font-size:14px" id="cp-rhelp">Ticked photos
+          are added. Red ones were flagged (reason underneath). Also untick any that are
+          blurry, cut off or of someone else.</p>
+        <div class="pgrid" id="cp-grid"></div>
+        <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap">
+          <button class="btn go" id="cp-keep">Add ticked photos</button>
+          <button class="btn" id="cp-discard">Discard all</button>
+        </div>
+      </div>
+    </div>
+  </section>
 </main>
-<button id="estop" class="estop b-stop">■ STOP</button>
+
+<!-- fullscreen map: viewer (#/maps/view/..) and no-pass editor (#/maps/edit/..) -->
+<div id="full" hidden>
+  <div class="bar2">
+    <button class="btn" id="fs-close" title="Close (Esc)"><svg><use href="#i-back"/></svg>Back</button>
+    <h3 id="fs-title"></h3>
+    <span class="info" id="fs-info"></span>
+    <span class="grow"></span>
+    <span id="fs-viewtools">
+      <button class="btn" id="fs-edit">Edit no-pass lines</button>
+    </span>
+    <span id="fs-edittools" style="display:inline-flex;gap:8px;flex-wrap:wrap">
+      <div class="seg" id="fs-mode"><button data-m="draw" class="on">Draw</button><button data-m="move">Move</button></div>
+      <button class="btn" id="fs-undo">Undo</button>
+      <button class="btn danger" id="fs-clear">Delete all lines</button>
+      <button class="btn go" id="fs-save">Save</button>
+    </span>
+    <button class="btn" id="fs-fit" title="Fit"><svg><use href="#i-fit"/></svg></button>
+  </div>
+  <div class="stage" id="fs-stage"><canvas id="fs-canvas"></canvas>
+    <div class="help" id="fs-help"></div></div>
+</div>
+
+<button class="btn stop estop" id="estop" hidden>■ STOP</button>
+
+<div id="modal" hidden><div class="box" role="dialog" aria-modal="true">
+  <h3 id="md-title"></h3><p id="md-text"></p>
+  <input type="text" id="md-input" hidden autocomplete="off">
+  <div class="err" id="md-err"></div>
+  <div class="row" id="md-buttons"></div>
+</div></div>
+<div id="toast" hidden></div>
 
 <script>
+'use strict';
 const $ = id => document.getElementById(id);
-let S = null, mapImg = null, mapMeta = null, mapRoom = null, roomsShown = '';
+const esc = t => String(t).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;',
+  '"': '&quot;', "'": '&#39;'}[c]));
+const enc = encodeURIComponent;
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+let S = null;                      // last /api/state
+window.panelState = () => S;       // read-only, for automated UI checks
 
+// ---------------------------------------------------------------- server calls, messages
 async function api(path, body) {
   const opt = body === undefined ? {} :
     {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)};
@@ -216,196 +480,382 @@ async function api(path, body) {
   if (!r.ok || j.ok === false) throw new Error(j.error || r.statusText);
   return j;
 }
-
-function say(el, text, isErr) { el.textContent = text; el.className = 'msg' + (isErr ? ' err' : ''); }
-
-async function act(el, path, body) {
-  try { say(el, (await api(path, body)).message); poll(); }
-  catch (e) { say(el, e.message, true); }
+let toastTimer = null;
+function toast(text, isErr) {
+  if (!text) return;
+  const t = $('toast');
+  t.textContent = text; t.className = isErr ? 'err' : ''; t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.hidden = true; }, isErr ? 7000 : 4000);
+}
+async function act(path, body) {
+  try { const j = await api(path, body); toast(j.message); poll(); return j; }
+  catch (e) { toast(e.message, true); return null; }
 }
 
-$('on').onclick = () => act($('stackmsg'), '/api/power/on',
-  {room: $('room').value, home: $('home').value, rounds: +$('rounds').value || 0});
-$('off').onclick = () => { if (confirm('Shut the robot software down?'))
-  act($('stackmsg'), '/api/power/off', {}); };
-$('start').onclick = () => act($('cmdmsg'), '/api/command', {cmd: 'start'});
-$('stop').onclick = () => act($('cmdmsg'), '/api/command', {cmd: 'stop'});
-$('estop').onclick = () => act($('cmdmsg'), '/api/command', {cmd: 'stop'});
-$('gohome').onclick = () => act($('cmdmsg'), '/api/command', {cmd: 'home'});
-$('reloc').onclick = () => act($('cmdmsg'), '/api/relocalize', {});
-
-const PILL = {
-  off: ['Off', 'var(--off)'], starting: ['Starting…', 'var(--warn)'],
-  running: ['Ready', 'var(--go)'], stopping: ['Shutting down…', 'var(--warn)'],
-  crashed: ['Stopped unexpectedly', 'var(--stop)'],
-};
-const LAPS = {idle: 'Stopped', running: 'Running laps', home: 'Going home', done: 'Done',
-              error: 'Cannot start', relocalize: 'Finding itself on the map'};
-
-function render() {
-  const st = S.stack.state, on = st === 'running';
-  const [txt, col] = PILL[st] || [st, 'var(--off)'];
-  const lapsState = S.laps && S.laps.state;
-  $('pill').textContent = on && lapsState ? (LAPS[lapsState] || lapsState) : txt;
-  $('pill').style.background = on && lapsState === 'error' ? 'var(--stop)' :
-    on && (lapsState === 'running' || lapsState === 'home') ? 'var(--home)' : col;
-
-  const names = S.rooms.join('\n');
-  if (names !== roomsShown) {
-    const keep = $('room').value;
-    $('room').innerHTML = '';
-    for (const n of S.rooms) $('room').add(new Option(n, n));
-    if (S.rooms.includes(keep)) $('room').value = keep;
-    roomsShown = names;
-  }
-  const busy = st === 'starting' || st === 'running' || st === 'stopping';
-  if (busy && S.stack.room) $('room').value = S.stack.room;
-  $('room').disabled = $('home').disabled = $('rounds').disabled = busy;
-  $('on').disabled = busy;
-  $('off').disabled = !busy;
-  if (st !== 'off' || !$('stackmsg').textContent) say($('stackmsg'), S.stack.message || '',
-    st === 'crashed');
-  if (st === 'off' && !S.port) say($('stackmsg'),
-    'ESP32 not found: check that the ESP32 and LiDAR USB cables are plugged in', true);
-
-  const ready = on && S.connected;
-  $('start').disabled = $('gohome').disabled = !ready;
-  $('stop').disabled = !(st === 'running' || st === 'starting');
-  $('reloc').disabled = !ready || S.localization.busy;
-  $('estop').style.display = ready && (lapsState === 'running' || lapsState === 'home')
-    ? 'block' : 'none';
-
-  const L = S.laps;
-  $('s-state').textContent = L ? (LAPS[L.state] || L.state) : (busy ? 'Waiting for the robot…' : '—');
-  $('s-msg').textContent = L ? L.message || '—' : '—';
-  $('s-loop').textContent = L && L.loops ? `round ${L.round || '–'}, lane ${L.loop || '–'} of ${L.loops}` : '—';
-  $('s-cov').textContent = L && L.coverage != null ?
-    `${Math.round(L.coverage * 100)}% of the floor, ${(L.length || 0).toFixed(0)} m per round` : '—';
-  const loc = S.localization;
-  $('s-loc').textContent = (loc.text || (S.pose ? 'On the map' : '—')) +
-    (S.pose ? `  (${S.pose[0].toFixed(2)}, ${S.pose[1].toFixed(2)})` : '');
-  $('s-loc').style.color = loc.state === 'failed' ? 'var(--stop)' : '';
-  $('s-esp').textContent = S.esp32 || (busy ? '—' : 'off');
-  $('log').textContent = (S.stack.log || []).join('\n') || 'No log yet.';
-
-  const room = S.stack.room || $('room').value;
-  if (room && room !== mapRoom) loadMap(room);
-  draw();
-  if (S.faces) renderFaces(S.faces);
+// ---------------------------------------------------------------- dialogs
+// ask({title, text, input, value, buttons: [{label, cls, value}]}) -> the chosen value
+// (or {value, text} with an input); Esc / clicking outside = the last button's value.
+let modalDone = null;
+function ask(o) {
+  return new Promise(resolve => {
+    $('md-title').textContent = o.title || '';
+    $('md-text').textContent = o.text || '';
+    $('md-text').hidden = !o.text;
+    $('md-input').hidden = !o.input;
+    $('md-input').value = o.value || '';
+    $('md-input').placeholder = o.placeholder || '';
+    $('md-err').textContent = '';
+    const row = $('md-buttons'); row.innerHTML = '';
+    const buttons = o.buttons || [{label: 'Cancel', value: null}, {label: 'OK', cls: 'accent', value: true}];
+    const finish = v => {
+      $('modal').hidden = true; modalDone = null;
+      resolve(o.input && v !== null && v !== false ? {value: v, text: $('md-input').value.trim()} : v);
+    };
+    buttons.forEach(b => {
+      const el = document.createElement('button');
+      el.className = 'btn ' + (b.cls || ''); el.textContent = b.label;
+      el.onclick = () => finish(b.value);
+      row.append(el);
+    });
+    modalDone = () => finish(o.cancel !== undefined ? o.cancel : buttons[0].value);
+    $('modal').hidden = false;
+    if (o.input) {
+      $('md-input').focus(); $('md-input').select();
+      $('md-input').onkeydown = e => { if (e.key === 'Enter') finish(buttons[buttons.length - 1].value); };
+    } else row.lastChild.focus();
+  });
 }
+$('modal').addEventListener('mousedown', e => { if (e.target === $('modal') && modalDone) modalDone(); });
+const confirmBox = (title, text, label = 'OK', cls = 'accent') =>
+  ask({title, text, buttons: [{label: 'Cancel', value: false}, {label, cls, value: true}]});
 
-// ---- Faces card -----------------------------------------------------------------------
-let reviewKey = '', peopleShown = '';
-const esc = t => String(t).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;',
-  '"': '&quot;', "'": '&#39;'}[c]));
-
-function renderFaces(F) {
-  const ppl = JSON.stringify(F.people);
-  if (ppl !== peopleShown) {
-    peopleShown = ppl;
-    $('f-people').innerHTML = F.people.length ? F.people.map(p =>
-      `<li><span>${esc(p.name)}</span><span class="n">${p.photos} photos` +
-      (p.photos !== p.enrolled ? ` · <span class="warn">${p.enrolled} in database</span>` : '') +
-      `</span></li>`).join('') : '<li>Nobody enrolled yet</li>';
-    $('f-names').innerHTML = F.people.map(p => `<option value="${esc(p.name)}">`).join('');
-  }
-  const db = F.database, close = (db.pairs || []).filter(p => p.confusable);
-  let dbText = db.built ? `Database: ${db.total} photos, built ${new Date(db.built * 1000)
-    .toLocaleString()}.` : 'No face database yet.';
-  if (db.outdated) dbText += ' Photos changed since then: rebuild to use them.';
-  if (close.length) dbText += ' Similar-looking: ' + close.map(p =>
-    `${p.a} & ${p.b} (${p.closest.toFixed(2)})`).join(', ') + '.';
-  $('f-db').textContent = dbText;
-  $('f-db').className = 'msg' + (db.outdated || close.length ? ' warn' : '');
-
-  const capturing = F.busy === 'capture', waiting = !!F.review;
-  $('f-capture').disabled = !!F.busy || waiting;
-  $('f-stop').disabled = !capturing;
-  $('f-rebuild').disabled = !!F.busy;
-  $('f-name').disabled = $('f-count').disabled = !!F.busy;
-  $('f-live').hidden = !capturing;
-  if (capturing) {
-    $('f-add').open = true;
-    const c = F.capture || {};
-    $('f-bar').style.width = c.count ? `${100 * c.saved / c.count}%` : '0';
-    say($('f-hint'), `${c.saved || 0} of ${c.count || '?'} · ${c.hint || 'Starting the camera'}`);
-  }
-  if (F.message) say($('f-msg'), F.message, F.error);
-  $('f-log').hidden = !(F.busy && F.busy !== 'capture' && F.log.length);
-  $('f-log').textContent = F.log.join('\n');
-
-  $('f-review').hidden = !waiting;
-  if (!waiting) { reviewKey = ''; return; }
-  const R = F.review, key = R.name + '|' + R.photos.map(p => p.file).join(',');
-  if (key === reviewKey) return;              // keep the ticks you changed
-  reviewKey = key;
-  $('f-rname').textContent = R.name;
-  $('f-grid').innerHTML = R.photos.map(p => {
-    const src = `/api/faces/photo?kind=staged&name=${encodeURIComponent(R.name)}` +
-      `&file=${encodeURIComponent(p.file)}`;
-    return `<label class="tile${p.keep ? '' : ' flagged off'}">` +
-      `<img src="${src}" alt="${esc(p.file)}" loading="lazy">` +
-      `<input type="checkbox" data-file="${esc(p.file)}"${p.keep ? ' checked' : ''}>` +
-      `${p.keep ? 'Add' : 'Leave out'}` +
-      p.reasons.map(r => `<div class="why">${esc(r)}</div>`).join('') +
-      p.notes.map(n => `<div class="note">${esc(n)}</div>`).join('') + '</label>';
-  }).join('');
-  for (const box of $('f-grid').querySelectorAll('input')) box.onchange = () => {
-    box.parentElement.classList.toggle('off', !box.checked);
-    box.nextSibling.textContent = box.checked ? 'Add' : 'Leave out';
-  };
-}
-
-$('f-capture').onclick = () => act($('f-msg'), '/api/faces/capture',
-  {name: $('f-name').value.trim(), count: +$('f-count').value || 15});
-$('f-stop').onclick = () => act($('f-msg'), '/api/faces/stop', {});
-$('f-keep').onclick = () => {
-  const files = [...$('f-grid').querySelectorAll('input:checked')].map(b => b.dataset.file);
-  const name = $('f-rname').textContent;
-  if (confirm(`Add ${files.length} photos to ${name}?`))
-    act($('f-msg'), '/api/faces/keep', {name, files});
-};
-$('f-discard').onclick = () => { const name = $('f-rname').textContent;
-  if (confirm(`Leave out all photos of ${name}?`)) act($('f-msg'), '/api/faces/discard', {name}); };
-$('f-rebuild').onclick = () => act($('f-msg'), '/api/faces/rebuild', {});
-setInterval(() => {                          // live camera view while capturing
-  if (S && S.faces && S.faces.busy === 'capture')
-    $('f-preview').src = '/api/faces/preview.jpg?t=' + Date.now();
-}, 300);
-
-async function loadMap(room) {
-  mapRoom = room;
-  try {
-    mapMeta = await api('/api/map?room=' + encodeURIComponent(room));
-    const img = new Image();
-    img.onload = () => { mapImg = img; draw(); };
-    img.src = '/api/map.png?room=' + encodeURIComponent(room);
-  } catch (e) { mapImg = mapMeta = null; }
-}
-$('room').onchange = () => { if (S && S.stack.state === 'off') loadMap($('room').value); };
-
-// map: fit the map image into the canvas; world (x, y) <-> canvas pixels
-let view = null;
-function draw() {
-  const c = $('map'), w = c.clientWidth, h = c.clientHeight, dpr = devicePixelRatio || 1;
-  if (c.width !== w * dpr || c.height !== h * dpr) { c.width = w * dpr; c.height = h * dpr; }
+// ---------------------------------------------------------------- map drawing
+// A map image recoloured for the dark theme: free floor, walls, unknown.
+function darkMap(img) {
+  const c = document.createElement('canvas');
+  c.width = img.naturalWidth; c.height = img.naturalHeight;
   const g = c.getContext('2d');
-  g.setTransform(dpr, 0, 0, dpr, 0, 0);
-  g.clearRect(0, 0, w, h);
-  if (!mapImg || !mapMeta) {
-    g.fillStyle = getComputedStyle(document.body).color;
-    g.fillText('No map', 12, 20);
+  g.drawImage(img, 0, 0);
+  const d = g.getImageData(0, 0, c.width, c.height), p = d.data;
+  for (let i = 0; i < p.length; i += 4) {
+    const v = p[i];
+    let r, gg, b;
+    if (v >= 250) { r = 30; gg = 42; b = 56; }            // free
+    else if (v <= 100) { r = 214; gg = 223; b = 233; }    // wall
+    else { r = 14; gg = 20; b = 28; }                     // unknown
+    p[i] = r; p[i + 1] = gg; p[i + 2] = b; p[i + 3] = 255;
+  }
+  g.putImageData(d, 0, 0);
+  return c;
+}
+const mapCache = {};               // key -> Promise<{img (canvas), meta}>
+function loadMapData(key, metaUrl, pngUrl, metaGiven) {
+  if (!mapCache[key]) mapCache[key] = (async () => {
+    const meta = metaGiven || await api(metaUrl);
+    const img = await new Promise((ok, bad) => {
+      const im = new Image(); im.onload = () => ok(im); im.onerror = () => bad(new Error('map image'));
+      im.src = pngUrl;
+    });
+    return {img: darkMap(img), meta};
+  })();
+  mapCache[key].catch(() => { delete mapCache[key]; });
+  return mapCache[key];
+}
+const roomMap = room => loadMapData('room:' + room + ':' + (mapVersions[room] || ''),
+  '/api/map?room=' + enc(room), '/api/map.png?room=' + enc(room) + '&v=' + (mapVersions[room] || ''));
+const mapVersions = {};            // room -> saved time (new scan = new image)
+
+function drawNopass(g, lines, P, m2px, width) {
+  const w = Math.max(3, m2px(width || 0.1));
+  g.lineCap = 'round';
+  for (const [a, b] of lines) {
+    const [u1, v1] = P(...a), [u2, v2] = P(...b);
+    g.strokeStyle = css('--nopass-edge'); g.lineWidth = w + 4;
+    g.beginPath(); g.moveTo(u1, v1); g.lineTo(u2, v2); g.stroke();
+    g.strokeStyle = css('--nopass'); g.lineWidth = w;
+    g.beginPath(); g.moveTo(u1, v1); g.lineTo(u2, v2); g.stroke();
+  }
+}
+
+// MapView: a canvas showing one map with pan / zoom (wheel, drag, pinch) and an overlay.
+class MapView {
+  constructor(canvas) {
+    this.c = canvas; this.data = null; this.z = null; this.overlay = null;
+    this.mode = 'move';               // 'move' (drag pans) or 'draw' (drag draws, onDraw)
+    this.pointers = new Map(); this.drag = null; this.onDraw = null; this.onTap = null;
+    canvas.addEventListener('wheel', e => { e.preventDefault(); this.zoomAt(e.offsetX, e.offsetY,
+      Math.exp(-e.deltaY * 0.0015)); }, {passive: false});
+    canvas.addEventListener('pointerdown', e => this.down(e));
+    canvas.addEventListener('pointermove', e => this.move(e));
+    canvas.addEventListener('pointerup', e => this.up(e));
+    canvas.addEventListener('pointercancel', e => this.up(e, true));
+    canvas.addEventListener('contextmenu', e => e.preventDefault());
+    canvas.style.touchAction = 'none';
+    new ResizeObserver(() => this.draw()).observe(canvas);
+  }
+  set(data) {
+    const same = this.data && data && this.data.meta.width === data.meta.width &&
+      this.data.meta.height === data.meta.height && this.data.meta.resolution === data.meta.resolution &&
+      this.data.meta.origin[0] === data.meta.origin[0] && this.data.meta.origin[1] === data.meta.origin[1];
+    this.data = data;
+    if (!same) this.z = null;         // a different map: fit it
+    this.draw();
+  }
+  fit() { this.z = null; this.draw(); }
+  size() { return [this.c.clientWidth, this.c.clientHeight]; }
+  base() {                            // the fitted scale and offset
+    const [w, h] = this.size(), m = this.data.meta;
+    const s = Math.min(w / m.width, h / m.height) * 0.96;
+    return {s, ox: (w - m.width * s) / 2, oy: (h - m.height * s) / 2};
+  }
+  view() { if (!this.z) this.z = this.base(); return this.z; }
+  P(x, y) {                           // world (m) -> canvas px
+    const v = this.view(), m = this.data.meta, r = m.resolution;
+    return [v.ox + (x - m.origin[0]) / r * v.s, v.oy + (m.height - (y - m.origin[1]) / r) * v.s];
+  }
+  W(u, v) {                           // canvas px -> world (m)
+    const z = this.view(), m = this.data.meta, r = m.resolution;
+    return [m.origin[0] + (u - z.ox) / z.s * r, m.origin[1] + (m.height - (v - z.oy) / z.s) * r];
+  }
+  m2px(d) { return d / this.data.meta.resolution * this.view().s; }
+  zoomAt(u, v, k) {
+    if (!this.data) return;
+    const z = this.view(), b = this.base();
+    const s = Math.max(b.s * 0.5, Math.min(b.s * 40, z.s * k));
+    k = s / z.s;
+    this.z = {s, ox: u - (u - z.ox) * k, oy: v - (v - z.oy) * k};
+    this.draw();
+  }
+  xy(e) { const b = this.c.getBoundingClientRect(); return [e.clientX - b.left, e.clientY - b.top]; }
+  down(e) {
+    if (!this.data) return;
+    this.c.setPointerCapture(e.pointerId);
+    this.pointers.set(e.pointerId, this.xy(e));
+    if (this.pointers.size === 2) {     // pinch: cancel any line, zoom / pan instead
+      if (this.drag && this.drag.kind === 'draw') this.drag = null;
+      const [p, q] = [...this.pointers.values()];
+      this.drag = {kind: 'pinch', d: Math.hypot(p[0] - q[0], p[1] - q[1]), m: [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2]};
+      return;
+    }
+    const [u, v] = this.xy(e);
+    const pan = this.mode === 'move' || e.button === 1 || e.button === 2 || e.shiftKey;
+    this.drag = pan ? {kind: 'pan', u, v, moved: 0} : {kind: 'draw', a: this.W(u, v), b: this.W(u, v), u, v};
+    this.draw();
+  }
+  move(e) {
+    if (!this.pointers.has(e.pointerId)) return;
+    this.pointers.set(e.pointerId, this.xy(e));
+    const d = this.drag; if (!d) return;
+    if (d.kind === 'pinch' && this.pointers.size >= 2) {
+      const [p, q] = [...this.pointers.values()];
+      const dist = Math.hypot(p[0] - q[0], p[1] - q[1]), m = [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];
+      const z = this.view(); z.ox += m[0] - d.m[0]; z.oy += m[1] - d.m[1];
+      this.zoomAt(m[0], m[1], dist / d.d);
+      d.d = dist; d.m = m;
+    } else if (d.kind === 'pan') {
+      const [u, v] = this.xy(e), z = this.view();
+      z.ox += u - d.u; z.oy += v - d.v; d.moved += Math.abs(u - d.u) + Math.abs(v - d.v);
+      d.u = u; d.v = v; this.draw();
+    } else if (d.kind === 'draw') {
+      d.b = this.W(...this.xy(e)); this.draw();
+    }
+  }
+  up(e, cancel) {
+    if (!this.pointers.has(e.pointerId)) return;
+    this.pointers.delete(e.pointerId);
+    const d = this.drag;
+    if (this.pointers.size > 0) { if (d && d.kind === 'pinch') this.drag = null; return; }
+    this.drag = null;
+    if (!d || cancel) { this.draw(); return; }
+    if (d.kind === 'draw' && this.onDraw) this.onDraw(d.a, d.b);
+    if (d.kind === 'pan' && d.moved < 6 && this.onTap) this.onTap(this.W(d.u, d.v));
+    this.draw();
+  }
+  draw() {
+    const c = this.c, [w, h] = this.size(), dpr = devicePixelRatio || 1;
+    if (!w || !h) return;
+    if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) {
+      c.width = Math.round(w * dpr); c.height = Math.round(h * dpr);
+    }
+    const g = c.getContext('2d');
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, w, h);
+    if (!this.data) return;
+    const z = this.view(), m = this.data.meta;
+    g.imageSmoothingEnabled = false;
+    g.drawImage(this.data.img, z.ox, z.oy, m.width * z.s, m.height * z.s);
+    const P = (x, y) => this.P(x, y), m2px = d => this.m2px(d);
+    if (this.overlay) this.overlay(g, P, m2px);
+    const d = this.drag;
+    if (d && d.kind === 'draw') drawNopass(g, [[d.a, d.b]], P, m2px, this.lineWidth);
+  }
+}
+
+// ---------------------------------------------------------------- routing
+const PAGES = ['robot', 'maps', 'faces', 'person', 'capture'];
+let route = {page: 'robot'};
+function parseRoute() {
+  const [path, query] = location.hash.replace(/^#\/?/, '').split('?');
+  const [a, b, ...rest] = path.split('/').map(decodeURIComponent);
+  const c = rest.join('/');
+  if (a === 'maps' && (b === 'view' || b === 'edit') && c) return {page: 'maps', full: b, room: c};
+  if (a === 'maps') return {page: 'maps'};
+  if (a === 'faces' && b === 'capture') {
+    const q = new URLSearchParams(query || '');
+    return {page: 'capture', name: q.get('name') || '', replace: q.get('replace') === '1'};
+  }
+  if (a === 'faces' && b) return {page: 'person', name: [b, c].filter(Boolean).join('/')};
+  if (a === 'faces') return {page: 'faces'};
+  return {page: 'robot'};
+}
+function go(hash) { if (location.hash !== hash) location.hash = hash; else onRoute(); }
+async function onRoute() {
+  const next = parseRoute();
+  // leaving the no-pass editor (Back button, menu) with unsaved lines: stay, ask, then go
+  if (editor.dirty && route.full === 'edit' && !(next.full === 'edit' && next.room === route.room)) {
+    const target = location.hash;
+    history.pushState(null, '', '#/maps/edit/' + enc(route.room));   // no hashchange
+    if (!(await askLeaveEditor())) return;
+    editor.dirty = false;
+    go(target);
     return;
   }
-  const s = Math.min(w / mapMeta.width, h / mapMeta.height);
-  const ox = (w - mapMeta.width * s) / 2, oy = (h - mapMeta.height * s) / 2;
-  const r = mapMeta.resolution, [mx, my] = mapMeta.origin;
-  view = {s, ox, oy, r, mx, my, H: mapMeta.height};
-  g.imageSmoothingEnabled = false;
-  g.drawImage(mapImg, ox, oy, mapMeta.width * s, mapMeta.height * s);
-  const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
-  const P = (x, y) => [ox + (x - mx) / r * s, oy + (mapMeta.height - (y - my) / r) * s];
-  const m2px = d => d / r * s;
+  route = next;
+  showRoute();
+}
+function showRoute() {
+  for (const p of PAGES) $('p-' + p).hidden = route.page !== p;
+  document.querySelectorAll('#drawer a, #topnav a').forEach(a => a.classList.toggle('on',
+    a.dataset.nav === (route.page === 'person' || route.page === 'capture' ? 'faces' : route.page)));
+  $('page-title').textContent = {robot: '', maps: '· Map manager', faces: '· Faces',
+    person: '· Faces', capture: '· Faces'}[route.page];
+  $('roompick').hidden = route.page !== 'robot';
+  closeMenu();
+  if (route.page === 'maps') { loadMaps(); }
+  if (route.page === 'faces') renderFaces();
+  if (route.page === 'person') loadPerson();
+  if (route.page === 'capture') openCapture();
+  openFull();
+  if (S) render();
+}
+addEventListener('hashchange', onRoute);
+
+// ---------------------------------------------------------------- menu
+const wide = matchMedia('(min-width: 900px)');
+wide.addEventListener('change', () => { if (wide.matches) closeMenu(); });
+function openMenu() { $('drawer').classList.add('open'); $('scrim').hidden = false; }
+function closeMenu() { $('drawer').classList.remove('open'); $('scrim').hidden = true; }
+$('menubtn').onclick = () => $('drawer').classList.contains('open') ? closeMenu() : openMenu();
+$('scrim').onclick = closeMenu;
+
+addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  if (!$('modal').hidden) { if (modalDone) modalDone(); return; }
+  if ($('drawer').classList.contains('open')) { closeMenu(); return; }
+  if (!$('full').hidden) { e.preventDefault(); closeFull(); }
+});
+
+// ================================================================ ROBOT (main screen)
+const mainView = new MapView($('maincanvas'));
+let viewMode = 'map', mainKey = '';
+const LAPS = {idle: 'Stopped', running: 'Running laps', home: 'Going home', done: 'Done',
+              error: 'Cannot start', relocalize: 'Finding itself on the map'};
+const EXPLORE = {idle: 'Ready to map', turn: 'Turning to open space', drive: 'Exploring',
+                 blocked_wait: 'Blocked', backup: 'Backing up', done: 'Map done',
+                 error: 'Stopped (problem)', home: 'Returning home', seek: 'Heading for new space'};
+
+$('c-start').onclick = () => act('/api/start', {room: S ? S.active || '' : ''});
+$('c-stop').onclick = $('estop').onclick = () => act('/api/command', {cmd: 'stop'});
+$('c-home').onclick = () => act('/api/command', {cmd: 'home'});
+$('c-reloc').onclick = () => act('/api/relocalize', {});
+$('c-swap').onclick = () => setView(viewMode === 'map' ? 'cam' : 'map');
+$('c-off').onclick = async () => {
+  if (await confirmBox('Power off?', S && S.stack.kind === 'explore' ?
+      'Shuts the robot software down. If you have not pressed Stop yet, the map so far is saved first.' :
+      'Shuts the robot software down. Start powers it on again.', 'Power off', 'stop'))
+    act('/api/power/off', {});
+};
+document.querySelectorAll('#viewseg button').forEach(b => b.onclick = () => setView(b.dataset.v));
+$('v-fit').onclick = () => mainView.fit();
+$('roompick').onchange = () => act('/api/active', {room: $('roompick').value});
+
+function setView(v) {
+  viewMode = v;
+  document.querySelectorAll('#viewseg button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
+  $('c-swap').querySelector('span').textContent = v === 'map' ? 'Swap to camera' : 'Swap to map';
+  $('maincanvas').hidden = v !== 'map';
+  $('camimg').hidden = v !== 'cam';
+  $('v-fit').hidden = $('legend').hidden = v !== 'map';
+  $('mainempty').hidden = true;
+  if (v === 'cam') camLoop();
+  else updateMainMap();
+}
+
+// camera: fetch frames one after another while the camera view is on screen
+let camRunning = false, camUrl = null;
+async function camLoop() {
+  if (camRunning) return;
+  camRunning = true;
+  while (viewMode === 'cam' && route.page === 'robot' && !document.hidden) {
+    try {
+      const r = await fetch('/api/camera.jpg?t=' + Date.now());
+      if (r.ok) {
+        const url = URL.createObjectURL(await r.blob());
+        $('camimg').src = url;
+        if (camUrl) URL.revokeObjectURL(camUrl);
+        camUrl = url;
+        $('mainempty').hidden = true;
+        await new Promise(ok => setTimeout(ok, 120));
+      } else {
+        const j = await r.json().catch(() => ({}));
+        $('mainempty').textContent = j.error || 'No camera picture';
+        $('mainempty').hidden = r.status === 503 && !!camUrl;
+        await new Promise(ok => setTimeout(ok, r.status === 503 ? 300 : 2000));
+      }
+    } catch (e) { await new Promise(ok => setTimeout(ok, 2000)); }
+  }
+  camRunning = false;
+}
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && viewMode === 'cam' && route.page === 'robot') camLoop();
+});
+
+const nopassCache = {};             // room -> {width, lines}
+async function nopassFor(room, fresh) {
+  if (!fresh && nopassCache[room]) return nopassCache[room];
+  try { nopassCache[room] = await api('/api/nopass?room=' + enc(room)); }
+  catch (e) { nopassCache[room] = {width: 0.1, lines: []}; }
+  return nopassCache[room];
+}
+
+async function updateMainMap() {
+  if (!S || viewMode !== 'map') return;
+  const exploring = S.stack.kind === 'explore' && ['starting', 'running'].includes(S.stack.state);
+  let key, loader;
+  if (exploring) {
+    const lm = S.live_map;
+    if (!lm) { mainView.set(null); showEmpty('Waiting for the map: it grows as the robot looks around'); return; }
+    key = 'live:' + lm.version;
+    loader = () => loadMapData(key, null, '/api/live_map.png?v=' + lm.version, lm);
+  } else if (S.active) {
+    key = 'room:' + S.active + ':' + (mapVersions[S.active] || '');
+    loader = () => roomMap(S.active);
+  } else { mainView.set(null); showEmpty('No rooms yet: open the Map manager and press Add'); return; }
+  if (key === mainKey) return;
+  mainKey = key;
+  try {
+    const data = await loader();
+    if (key !== mainKey) return;
+    if (!exploring) await nopassFor(S.active);
+    $('mainempty').hidden = true;
+    mainView.set(data);
+    for (const k in mapCache) if (k.startsWith('live:') && k !== key) delete mapCache[k];
+  } catch (e) { mainKey = ''; showEmpty('Could not load the map'); }
+}
+function showEmpty(t) { if (viewMode !== 'map') return; $('mainempty').textContent = t; $('mainempty').hidden = false; }
+
+mainView.overlay = (g, P, m2px) => {
   if (!S) return;
   const line = (pts, color, width) => {
     if (!pts || pts.length < 2) return;
@@ -414,70 +864,483 @@ function draw() {
     pts.forEach(([x, y], i) => { const [u, v] = P(x, y); i ? g.lineTo(u, v) : g.moveTo(u, v); });
     g.stroke();
   };
+  const exploring = S.stack.kind === 'explore' && ['starting', 'running'].includes(S.stack.state);
+  const np = !exploring && S.active && nopassCache[S.active];
+  if (np) drawNopass(g, np.lines, P, m2px, np.width);
   line(S.path, css('--lane'), Math.max(2, m2px(0.08)));
   line(S.current, css('--current'), Math.max(2, m2px(0.05)));
   if (S.home) {
     const [u, v] = P(...S.home);
     g.fillStyle = css('--home');
-    g.beginPath(); g.arc(u, v, Math.max(6, m2px(0.23)), 0, 7); g.fill();
+    g.beginPath(); g.arc(u, v, Math.max(7, m2px(0.23)), 0, 7); g.fill();
     g.fillStyle = '#fff'; g.font = 'bold 10px system-ui'; g.textAlign = 'center';
     g.fillText('H', u, v + 3.5);
   }
   for (const [x, y, size] of S.boxes || []) {
-    const [u, v] = P(x, y), d = Math.max(6, m2px(size));
+    const [u, v] = P(x, y), d = Math.max(7, m2px(size));
     g.fillStyle = css('--box'); g.fillRect(u - d / 2, v - d / 2, d, d);
   }
   if (S.pose) {
     const [x, y, a] = S.pose, [u, v] = P(x, y), rad = Math.max(7, m2px(0.26));
     g.fillStyle = css('--robot');
     g.beginPath(); g.arc(u, v, rad, 0, 7); g.fill();
-    g.strokeStyle = '#fff'; g.lineWidth = 2;
-    g.beginPath(); g.moveTo(u, v); g.lineTo(u + Math.cos(a) * rad * 1.4, v - Math.sin(a) * rad * 1.4);
+    g.strokeStyle = '#04120e'; g.lineWidth = 2.5;
+    g.beginPath(); g.moveTo(u, v); g.lineTo(u + Math.cos(a) * rad * 1.5, v - Math.sin(a) * rad * 1.5);
     g.stroke();
   }
-}
-addEventListener('resize', draw);
-
-$('map').addEventListener('click', ev => {
-  if (!view || !S || !S.boxes || !S.boxes.length) return;
-  const b = ev.target.getBoundingClientRect();
-  const u = ev.clientX - b.left, v = ev.clientY - b.top;
-  const x = view.mx + (u - view.ox) / view.s * view.r;
-  const y = view.my + (view.H - (v - view.oy) / view.s) * view.r;
+};
+mainView.onTap = async ([x, y]) => {          // tap an orange box to remove it
+  if (!S || !S.boxes || !S.boxes.length) return;
   const near = S.boxes.find(([bx, by, size]) => Math.hypot(bx - x, by - y) < size / 2 + 0.3);
-  if (near && confirm('Remove this orange box?'))
-    act($('cmdmsg'), '/api/click', {x: near[0], y: near[1]});
-});
+  if (near && await confirmBox('Remove this box?', 'The robot marked something in the way here. Remove the box if it has been cleared.', 'Remove'))
+    act('/api/click', {x: near[0], y: near[1]});
+};
 
-async function poll() {
-  try {
-    S = await api('/api/state');
-    render();
-  } catch (e) {
-    $('pill').textContent = 'Panel not reachable';
-    $('pill').style.background = 'var(--stop)';
+const PILL = {off: ['Off', 'var(--muted)'], starting: ['Starting…', 'var(--warn)'],
+  running: ['Ready', 'var(--go)'], stopping: ['Shutting down…', 'var(--warn)'],
+  crashed: ['Stopped unexpectedly', 'var(--stop)']};
+let roomsShown = '';
+
+function renderRobot() {
+  const st = S.stack.state, on = ['starting', 'running'].includes(st);
+  const exploring = S.stack.kind === 'explore' && on;
+  const ready = st === 'running' && S.connected;
+  const L = exploring ? S.explore : S.laps;
+  const busy = S.localization.busy;
+
+  // header room picker
+  const names = S.rooms.join('\n') + '|' + (S.active || '');
+  if (names !== roomsShown) {
+    roomsShown = names;
+    const sel = $('roompick'); sel.innerHTML = '';
+    for (const n of S.rooms) sel.add(new Option(n, n));
+    if (exploring && S.active && !S.rooms.includes(S.active)) sel.add(new Option(S.active + ' (mapping)', S.active));
+    if (!S.rooms.length && !exploring) sel.add(new Option('No rooms yet', ''));
+    sel.value = S.active || '';
   }
+  $('roompick').disabled = on || st === 'stopping';
+
+  $('c-start').disabled = st === 'stopping' || (st === 'starting' && exploring) ||
+    (!on && !S.active) || busy;
+  $('c-start').title = !on ? 'Powers the robot software on, finds the robot on the map, then starts the laps' : '';
+  $('c-stop').disabled = false;                        // Stop is always available
+  $('c-home').disabled = !ready;
+  $('c-reloc').disabled = !ready || exploring || busy;
+  $('c-off').disabled = !on;
+
+  let doing;
+  if (!on) doing = st === 'stopping' ? 'Shutting down' : st === 'crashed' ? 'Stopped unexpectedly' : 'Off';
+  else if (!L) doing = S.pending_start ? 'Starting up' : 'Waiting for the robot';
+  else doing = (exploring ? EXPLORE : LAPS)[L.state] || L.state;
+  $('s-state').textContent = doing;
+  $('s-msg').textContent = (L && L.message) || (on || st === 'crashed' ? S.stack.message : '—') || '—';
+  if (exploring) {
+    $('s-prog-k').textContent = 'Scanned';
+    $('s-prog').textContent = L && L.coverage != null ?
+      `${Math.round(L.coverage * 100)}% · ${(L.distance || 0).toFixed(1)} m driven` : '—';
+  } else {
+    $('s-prog-k').textContent = 'Progress';
+    $('s-prog').textContent = L && L.loops ? `round ${L.round || '–'}, lane ${L.loop || '–'}/${L.loops}` +
+      (L.coverage != null ? ` · ${Math.round(L.coverage * 100)}%` : '') : '—';
+  }
+  const loc = S.localization;
+  $('s-loc').textContent = exploring ? (S.pose ? 'Mapping' : '—') :
+    (loc.state === 'searching' ? 'Finding itself…' : loc.state === 'failed' ? 'Lost' :
+     S.pose && on ? 'On the map' : '—');
+  $('s-loc').style.color = !exploring && loc.state === 'failed' ? 'var(--stop)' : '';
+  $('s-loc').title = loc.text || '';
+  $('s-esp').textContent = S.esp32 || (on ? '—' : 'off');
+  let note = S.note || '';
+  if (!note && !on && !S.port) note = 'ESP32 not found: check the ESP32 and LiDAR USB cables';
+  if (!note && st === 'crashed') note = S.stack.message;
+  if (!note && !exploring && loc.state === 'failed' && on) note = 'Could not find itself on the map: use Manual re-localize';
+  $('s-note').textContent = note;
+
+  $('bat').querySelector('span').textContent = S.battery == null ? '—%' : `${Math.round(S.battery)}%`;
+  $('mode-pill').hidden = !exploring;
+  $('mode-pill').innerHTML = exploring ? `<i style="background:var(--warn)"></i>Mapping ${esc(S.active || '')}` : '';
+  $('log').textContent = (S.stack.log || []).join('\n') || 'No log yet.';
+  if (viewMode === 'map') { updateMainMap(); mainView.draw(); }
 }
-async function runs() {
+
+async function loadRuns() {
   try {
     const list = await api('/api/runs');
-    $('runs').innerHTML = '';
+    $('runs').innerHTML = list.length ? '' : '<li>No runs yet.</li>';
     for (const r of list) {
       const li = document.createElement('li');
-      li.append(r.name + ' — ' + new Date(r.time * 1000).toLocaleString() + ' ');
-      for (const f of r.files) {
-        const a = document.createElement('a');
-        a.href = '/api/log?file=' + encodeURIComponent(f); a.target = '_blank';
-        a.textContent = f.split('_')[0];
-        li.append(a);
-      }
+      const log = r.files.find(f => f.startsWith('run_'));
+      li.innerHTML = `<span class="when">${esc(new Date(r.time * 1000).toLocaleString())}</span>` +
+        `<span class="room"></span>` +
+        r.files.map(f => `<a href="/api/log?file=${enc(f)}" target="_blank" rel="noopener">${esc(f.split('_')[0])}</a>`).join(' ');
+      li.querySelector('.room').textContent = r.name;
       $('runs').append(li);
     }
   } catch (e) {}
 }
-poll(); runs();
-setInterval(poll, 500);
-setInterval(runs, 15000);
+$('logs').addEventListener('toggle', () => { if ($('logs').open) loadRuns(); });
+
+// ================================================================ MAP MANAGER
+let maps = [], mapSel = null, picking = false;
+async function loadMaps() {
+  try { maps = await api('/api/maps'); } catch (e) { toast(e.message, true); return; }
+  for (const m of maps) mapVersions[m.name] = m.modified;
+  if (mapSel && !maps.some(m => m.name === mapSel)) mapSel = null;
+  const grid = $('maptiles');
+  grid.innerHTML = maps.length ? '' :
+    '<div class="empty-tiles">No maps yet. Press <b>Add</b> to map a room: the robot explores it on its own.</div>';
+  for (const m of maps) {
+    const t = document.createElement('div');
+    t.className = 'tile' + (m.name === mapSel ? ' sel' : '');
+    t.innerHTML = `<div class="thumb"><canvas width="240" height="240"></canvas></div>
+      <div class="name"></div><div class="meta"></div>`;
+    t.querySelector('.name').textContent = m.name;
+    if (S && S.active === m.name) t.querySelector('.name').insertAdjacentHTML('beforeend', '<span class="badge">main</span>');
+    t.querySelector('.meta').textContent = `${m.width_m} × ${m.height_m} m · ${m.nopass} no-pass line${m.nopass === 1 ? '' : 's'}`;
+    t.onclick = () => {
+      if (picking) { setPicking(false); go('#/maps/edit/' + enc(m.name)); return; }
+      mapSel = m.name; grid.querySelectorAll('.tile').forEach(x => x.classList.toggle('sel', x === t));
+      renderMapActions();
+    };
+    t.ondblclick = () => { if (!picking) go('#/maps/view/' + enc(m.name)); };
+    grid.append(t);
+    thumb(t.querySelector('canvas'), m.name);
+  }
+  renderMapActions();
+}
+async function thumb(canvas, room) {
+  try {
+    const data = await roomMap(room), np = await nopassFor(room, true);
+    const g = canvas.getContext('2d'), m = data.meta, W = canvas.width;
+    const s = Math.min(W / m.width, W / m.height), ox = (W - m.width * s) / 2, oy = (W - m.height * s) / 2;
+    g.fillStyle = '#0e141c'; g.fillRect(0, 0, W, W);
+    g.drawImage(data.img, ox, oy, m.width * s, m.height * s);
+    const P = (x, y) => [ox + (x - m.origin[0]) / m.resolution * s, oy + (m.height - (y - m.origin[1]) / m.resolution) * s];
+    drawNopass(g, np.lines, P, d => d / m.resolution * s, np.width);
+  } catch (e) {}
+}
+function setPicking(on) {
+  picking = on;
+  $('maptiles').classList.toggle('picking', on);
+  $('m-edit').classList.toggle('on', on);
+  $('m-edit').textContent = on ? 'Cancel edit' : 'Edit';
+  renderMapActions();
+}
+function renderMapActions() {
+  const running = S && ['starting', 'running', 'stopping'].includes(S.stack.state);
+  const inUse = running && S.stack.room === mapSel;
+  $('maphint').textContent = picking ? 'Pick the map to draw no-pass lines on.' :
+    mapSel ? `${mapSel} selected.` + (inUse ? ' (in use by the robot)' : '') : 'Select a map.';
+  $('m-rename').disabled = $('m-delete').disabled = !mapSel || picking || inUse;
+  $('m-use').disabled = !mapSel || picking || running || (S && S.active === mapSel);
+  $('m-add').disabled = picking || running;
+  $('m-add').title = running ? 'Power off the robot first' : 'Map a new room: the robot explores it';
+  $('m-edit').disabled = !maps.length;
+}
+$('m-edit').onclick = () => setPicking(!picking);
+$('m-use').onclick = async () => { if (await act('/api/active', {room: mapSel})) loadMaps(); };
+$('m-rename').onclick = async () => {
+  const r = await ask({title: 'Rename map', input: true, value: mapSel,
+    buttons: [{label: 'Cancel', value: null}, {label: 'Rename', cls: 'accent', value: true}]});
+  if (!r || !r.text || r.text === mapSel) return;
+  if (await act('/api/maps/rename', {old: mapSel, new: r.text})) { mapSel = r.text; loadMaps(); }
+};
+$('m-delete').onclick = async () => {
+  if (!await confirmBox(`Delete ${mapSel}?`, 'The room and its no-pass lines are removed. ' +
+      'The map files are kept in maps/deleted/ in case you need them back.', 'Delete', 'stop')) return;
+  if (await act('/api/maps/delete', {name: mapSel})) { mapSel = null; loadMaps(); }
+};
+$('m-add').onclick = async () => {
+  const r = await ask({title: 'Map a new room', input: true, placeholder: 'Room name, e.g. Library',
+    text: 'Put the robot inside the room first. The robot software starts in mapping mode; ' +
+      'press Start on the main screen and the robot explores on its own. Stop (or a ' +
+      'fully scanned room) saves the map under this name.',
+    buttons: [{label: 'Cancel', value: null}, {label: 'Start mapping', cls: 'accent', value: true}]});
+  if (!r || !r.text) return;
+  if (await act('/api/maps/add', {name: r.text})) go('#/');
+};
+
+// ---------------------------------------------------------------- fullscreen viewer / editor
+const fullView = new MapView($('fs-canvas'));
+const editor = {room: null, lines: [], width: 0.1, dirty: false, saved: '[]'};
+fullView.overlay = (g, P, m2px) => drawNopass(g, editor.lines, P, m2px, editor.width);
+fullView.onDraw = (a, b) => {
+  if (Math.hypot(a[0] - b[0], a[1] - b[1]) < Math.max(editor.width, 0.1)) return;  // a click
+  const r = v => Math.round(v * 1000) / 1000;
+  editor.lines.push([[r(a[0]), r(a[1])], [r(b[0]), r(b[1])]]);
+  editorChanged();
+};
+function editorChanged() {
+  editor.dirty = JSON.stringify(editor.lines) !== editor.saved;
+  const n = editor.lines.length;
+  $('fs-info').textContent = `${n} no-pass line${n === 1 ? '' : 's'}` + (editor.dirty ? ' · unsaved' : '');
+  $('fs-undo').disabled = !n; $('fs-clear').disabled = !n;
+  $('fs-save').disabled = !editor.dirty;
+  fullView.draw();
+}
+function setEditMode(m) {
+  fullView.mode = m;
+  document.querySelectorAll('#fs-mode button').forEach(b => b.classList.toggle('on', b.dataset.m === m));
+  $('fs-stage').classList.toggle('draw', m === 'draw');
+  $('fs-stage').classList.toggle('move', m === 'move');
+}
+document.querySelectorAll('#fs-mode button').forEach(b => b.onclick = () => setEditMode(b.dataset.m));
+let fullKey = '';
+async function openFull() {
+  const want = route.page === 'maps' && route.full ? route.full + ':' + route.room : '';
+  $('full').hidden = !want;
+  document.body.style.overflow = want ? 'hidden' : '';
+  if (!want) { fullKey = ''; return; }
+  if (want === fullKey) return;
+  fullKey = want;
+  const edit = route.full === 'edit';
+  $('fs-title').textContent = route.room;
+  $('fs-viewtools').hidden = edit;
+  $('fs-edittools').hidden = !edit;
+  $('fs-help').innerHTML = edit ?
+    'Drag on the map to draw a no-pass line (the robot treats it as a wall). ' +
+    '<b>Move</b> or two fingers / right-drag to pan, wheel or pinch to zoom. Esc to leave.' :
+    'Wheel or pinch to zoom, drag to pan. Esc or Back to go back.';
+  setEditMode(edit ? 'draw' : 'move');
+  try {
+    const [data, np] = await Promise.all([roomMap(route.room), nopassFor(route.room, true)]);
+    editor.room = route.room; editor.width = np.width || 0.1;
+    editor.lines = np.lines.map(l => l.map(p => p.slice()));
+    editor.saved = JSON.stringify(editor.lines);
+    fullView.lineWidth = editor.width;
+    fullView.set(null); fullView.set(data);
+    editorChanged();
+  } catch (e) { toast('Could not open that map: ' + e.message, true); closeFull(true); }
+}
+async function askLeaveEditor() {
+  const v = await ask({title: 'Unsaved no-pass lines',
+    text: 'Save the lines you drew before leaving?',
+    buttons: [{label: 'Keep editing', value: 'keep'}, {label: 'Discard', cls: 'danger', value: 'discard'},
+              {label: 'Save', cls: 'go', value: 'save'}], cancel: 'keep'});
+  if (v === 'save') return await saveLines();
+  if (v === 'discard') { editor.dirty = false; return true; }
+  return false;
+}
+async function closeFull(force) {
+  if (!force && route.full === 'edit' && editor.dirty && !(await askLeaveEditor())) return;
+  editor.dirty = false;
+  go('#/maps');
+}
+async function saveLines() {
+  try {
+    const j = await api('/api/nopass', {room: editor.room, lines: editor.lines});
+    editor.saved = JSON.stringify(editor.lines);
+    nopassCache[editor.room] = {width: editor.width, lines: editor.lines.map(l => l.map(p => p.slice()))};
+    editorChanged(); mainKey = ''; toast(j.message);
+    return true;
+  } catch (e) { toast(e.message, true); return false; }
+}
+$('fs-close').onclick = () => closeFull();
+$('fs-fit').onclick = () => fullView.fit();
+$('fs-edit').onclick = () => go('#/maps/edit/' + enc(route.room));
+$('fs-undo').onclick = () => { editor.lines.pop(); editorChanged(); };
+$('fs-clear').onclick = async () => {
+  if (await confirmBox('Delete all lines?', 'Removes every no-pass line on this map (nothing is saved until you press Save).', 'Delete all', 'stop')) {
+    editor.lines = []; editorChanged();
+  }
+};
+$('fs-save').onclick = saveLines;
+addEventListener('beforeunload', e => { if (editor.dirty && route.full === 'edit') { e.preventDefault(); e.returnValue = ''; } });
+
+// ================================================================ FACES
+let faceSel = null, facesShown = '';
+function renderFaces() {
+  if (!S || !S.faces) return;
+  const F = S.faces;
+  const key = JSON.stringify(F.people);
+  if (key !== facesShown) {
+    facesShown = key;
+    if (faceSel && !F.people.some(p => p.name === faceSel)) faceSel = null;
+    const grid = $('facetiles');
+    grid.innerHTML = F.people.length ? '' : '<div class="empty-tiles">Nobody enrolled yet. Press <b>Add person</b>.</div>';
+    for (const p of F.people) {
+      const t = document.createElement('div');
+      t.className = 'tile' + (p.name === faceSel ? ' sel' : '');
+      t.innerHTML = `<div class="thumb">${p.cover ? `<img alt="" loading="lazy" src="/api/faces/photo?kind=enrolled&name=${enc(p.name)}&file=${enc(p.cover)}">` :
+        '<svg width="60" height="60" style="stroke:var(--muted)"><use href="#i-face"/></svg>'}</div>
+        <div class="name"></div><div class="meta"></div>`;
+      t.querySelector('.name').textContent = p.name;
+      t.querySelector('.meta').textContent = `${p.photos} photo${p.photos === 1 ? '' : 's'}` +
+        (p.photos !== p.enrolled ? ` · ${p.enrolled} in database` : '');
+      t.dataset.name = p.name;
+      t.onclick = () => { faceSel = p.name; renderFaces(); };
+      t.ondblclick = () => go('#/faces/' + enc(p.name));
+      grid.append(t);
+    }
+  }
+  $('facetiles').querySelectorAll('.tile').forEach(t => t.classList.toggle('sel', t.dataset.name === faceSel));
+  const db = F.database, close = (db.pairs || []).filter(p => p.confusable);
+  let txt = db.built ? `Face database: ${db.total} photos, updated ${new Date(db.built * 1000).toLocaleString()}.` :
+    'No face database yet: create it so the robot recognises these people.';
+  if (db.outdated && db.built) txt += ' Photos changed since: update it so the robot uses them.';
+  if (close.length) txt += ' Similar-looking: ' + close.map(p => `${p.a} & ${p.b}`).join(', ') + '.';
+  $('f-banner').hidden = !(F.people.length || db.built);
+  $('f-banner').classList.toggle('warn', !!(db.outdated || close.length));
+  $('f-bannertxt').textContent = F.busy === 'rebuild' ? 'Updating the face database…' : txt;
+  $('f-rebuild').hidden = !db.outdated && F.busy !== 'rebuild';
+  $('f-rebuild').disabled = !!F.busy;
+  $('f-log').hidden = !(F.busy === 'rebuild' && F.log.length);
+  $('f-log').textContent = F.log.join('\n');
+  $('f-waiting').hidden = !F.review && F.busy !== 'capture' && F.busy !== 'review';
+  $('f-waitingtxt').textContent = F.review ? `New photos of ${F.review.name} are waiting for you to check.` :
+    F.busy ? `Taking photos of ${F.name}…` : '';
+  $('f-review').textContent = F.review ? 'Review photos' : 'Open';
+  $('facehint').textContent = faceSel ? `${faceSel} selected.` : 'Select a person.';
+  $('f-view').disabled = !faceSel;
+  $('f-delete').disabled = !faceSel || F.name === faceSel || (F.review && F.review.name === faceSel);
+  $('f-add').disabled = !!F.busy || !!F.review;
+}
+$('f-rebuild').onclick = () => act('/api/faces/rebuild', {});
+$('f-review').onclick = () => {
+  const F = S.faces, name = F.review ? F.review.name : F.name;
+  go('#/faces/capture?name=' + enc(name) + (F.replace === name ? '&replace=1' : ''));
+};
+$('f-add').onclick = () => go('#/faces/capture');
+$('f-view').onclick = () => go('#/faces/' + enc(faceSel));
+$('f-delete').onclick = async () => {
+  if (!await confirmBox(`Delete ${faceSel}?`, `${faceSel} will no longer be recognised as ` +
+      'authorized once the face database is updated. Their photos are kept in captures/.', 'Delete', 'stop')) return;
+  if (await act('/api/faces/delete_person', {name: faceSel})) { faceSel = null; facesShown = ''; }
+};
+
+// ---- one person's photos
+async function loadPerson() {
+  const name = route.name;
+  $('pp-name').textContent = name;
+  $('pp-grid').innerHTML = '';
+  let files = [];
+  try { files = await api('/api/faces/photos?name=' + enc(name)); }
+  catch (e) { $('pp-info').textContent = e.message; return; }
+  $('pp-info').textContent = `${files.length} photo${files.length === 1 ? '' : 's'}. Delete the ones that are blurry or of someone else, or retake them all.`;
+  for (const f of files) {
+    const d = document.createElement('div');
+    d.className = 'photo';
+    d.innerHTML = `<img alt="" loading="lazy" src="/api/faces/photo?kind=enrolled&name=${enc(name)}&file=${enc(f)}">` +
+      `<button class="x" title="Delete this photo">✕</button>`;
+    d.querySelector('.x').onclick = async () => {
+      if (!await confirmBox('Delete this photo?', 'It is moved to captures/ and left out of the face database when you next update it.', 'Delete', 'stop')) return;
+      if (await act('/api/faces/delete_photo', {name, file: f})) loadPerson();
+    };
+    $('pp-grid').append(d);
+  }
+}
+$('pp-back').onclick = () => go('#/faces');
+$('pp-retake').onclick = async () => {
+  if (await confirmBox(`Retake photos of ${route.name}?`, 'Takes a new set of photos. The ones ' +
+      'you keep replace the old photos (which move to captures/).', 'Retake'))
+    go('#/faces/capture?name=' + enc(route.name) + '&replace=1');
+};
+
+// ---- capture: add person / retake
+let reviewKey = '';
+function openCapture() {
+  $('cp-title').textContent = route.replace ? `Retake photos of ${route.name}` : route.name ? route.name : 'Add person';
+  if (!S || !S.faces || !S.faces.busy) $('cp-name').value = route.name;
+  $('cp-name').disabled = !!route.replace;
+  reviewKey = '';
+  renderCapture();
+}
+function renderCapture() {
+  if (!S || !S.faces) return;
+  const F = S.faces, capturing = F.busy === 'capture';
+  if (capturing || F.busy === 'review') $('cp-name').value = F.name;
+  $('cp-start').disabled = !!F.busy || !!F.review;
+  $('cp-stop').disabled = !capturing;
+  $('cp-name').disabled = !!F.busy || !!F.review || !!route.replace;
+  $('cp-count').disabled = !!F.busy || !!F.review;
+  $('cp-live').hidden = !capturing;
+  if (capturing) {
+    const c = F.capture || {};
+    $('cp-bar').style.width = c.count ? `${100 * c.saved / c.count}%` : '0';
+    $('cp-hint').textContent = `${c.saved || 0} of ${c.count || '?'} · ${c.hint || 'Starting the camera'}`;
+  }
+  $('cp-busy').hidden = F.busy !== 'review';
+  $('cp-busy').textContent = 'Checking the photos…';
+  $('cp-review').hidden = !F.review;
+  if (!F.review) { reviewKey = ''; return; }
+  const R = F.review, key = R.name + '|' + R.photos.map(p => p.file).join(',');
+  if (key === reviewKey) return;               // keep the ticks you changed
+  reviewKey = key;
+  $('cp-rname').textContent = R.name;
+  $('cp-rhelp').textContent = (F.replace === R.name ? 'Retake: the ticked photos replace the old ones. ' : '') +
+    'Ticked photos are added. Red ones were flagged (reason underneath). Also untick any that are blurry, cut off or of someone else.';
+  $('cp-grid').innerHTML = R.photos.map(p => {
+    const src = `/api/faces/photo?kind=staged&name=${enc(R.name)}&file=${enc(p.file)}`;
+    return `<div class="photo${p.keep ? '' : ' flagged off'}"><img src="${src}" alt="" loading="lazy">` +
+      `<label><input type="checkbox" data-file="${esc(p.file)}"${p.keep ? ' checked' : ''}><span>${p.keep ? 'Add' : 'Leave out'}</span></label>` +
+      p.reasons.map(r => `<div class="why">${esc(r)}</div>`).join('') +
+      p.notes.map(n => `<div class="noteline">${esc(n)}</div>`).join('') + '</div>';
+  }).join('');
+  for (const box of $('cp-grid').querySelectorAll('input')) box.onchange = () => {
+    box.closest('.photo').classList.toggle('off', !box.checked);
+    box.nextElementSibling.textContent = box.checked ? 'Add' : 'Leave out';
+  };
+}
+$('cp-back').onclick = () => go(route.replace ? '#/faces/' + enc(route.name) : '#/faces');
+$('cp-start').onclick = () => act('/api/faces/capture', {name: $('cp-name').value.trim(),
+  count: +$('cp-count').value || 15, replace: !!route.replace});
+$('cp-stop').onclick = () => act('/api/faces/stop', {});
+$('cp-keep').onclick = async () => {
+  const files = [...$('cp-grid').querySelectorAll('input:checked')].map(b => b.dataset.file);
+  const name = $('cp-rname').textContent, replace = S.faces.replace === name;
+  if (!await confirmBox(`Add ${files.length} photo${files.length === 1 ? '' : 's'} to ${name}?`,
+      replace && files.length ? 'They replace the old photos.' : '', 'Add')) return;
+  if (await act('/api/faces/keep', {name, files})) go('#/faces/' + enc(name));
+};
+$('cp-discard').onclick = async () => {
+  const name = $('cp-rname').textContent;
+  if (await confirmBox(`Discard the new photos of ${name}?`, 'Nothing changes for ' + name + '.', 'Discard', 'stop'))
+    if (await act('/api/faces/discard', {name})) go('#/faces');
+};
+setInterval(() => {
+  if (route.page === 'capture' && S && S.faces && S.faces.busy === 'capture')
+    $('cap-preview').src = '/api/faces/preview.jpg?t=' + Date.now();
+}, 300);
+
+// ================================================================ poll + render
+let lastFacesMsg = '';
+function render() {
+  const st = S.stack.state, on = ['starting', 'running'].includes(st);
+  const L = S.stack.kind === 'explore' ? S.explore : S.laps;
+  let [txt, col] = PILL[st] || [st, 'var(--muted)'];
+  if (on && S.stack.kind === 'explore') { txt = L ? (EXPLORE[L.state] || L.state) : 'Mapping…'; col = 'var(--warn)'; }
+  else if (on && L) {
+    txt = LAPS[L.state] || L.state;
+    col = L.state === 'error' ? 'var(--stop)' : ['running', 'home'].includes(L.state) ? 'var(--home)' : 'var(--go)';
+  } else if (on && S.pending_start) txt = 'Starting…';
+  $('pill').querySelector('span').textContent = txt;
+  $('pill').querySelector('i').style.background = col;
+  // always-in-reach Stop while the robot moves (any page; the full-screen map covers it)
+  const moving = on && L && !['idle', 'done', 'error'].includes(L.state);
+  $('estop').hidden = !moving || !$('full').hidden;
+
+  const F = S.faces;
+  if (F && F.message && F.message !== lastFacesMsg) { lastFacesMsg = F.message; if (route.page !== 'robot') toast(F.message, F.error); }
+  if (route.page === 'robot') renderRobot();
+  if (route.page === 'maps') renderMapActions();
+  if (route.page === 'faces') renderFaces();
+  if (route.page === 'capture') renderCapture();
+}
+async function poll() {
+  try { S = await api('/api/state'); render(); }
+  catch (e) {
+    $('pill').querySelector('span').textContent = 'Panel not reachable';
+    $('pill').querySelector('i').style.background = 'var(--stop)';
+  }
+}
+(async () => {
+  try { (await api('/api/maps')).forEach(m => { mapVersions[m.name] = m.modified; }); } catch (e) {}
+  S = null; await poll();
+  if (S && S.faces) lastFacesMsg = S.faces.message;
+  route = parseRoute(); showRoute();
+  setInterval(poll, 500);
+  setInterval(() => { if ($('logs').open && route.page === 'robot') loadRuns(); }, 15000);
+})();
 </script>
 </body>
 </html>

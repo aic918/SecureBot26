@@ -35,9 +35,11 @@ Kept on the robot only, never committed: YOLO weights (`~/SecureBot/yolo11n.pt`)
 and encodings (`~/yolo/securebot_face_id/`) and the venv.
 
 ## Using the robot (web panel)
-The web panel runs the robot from a phone or laptop: laps round a saved room, and enrolling
-the faces the robot recognizes. A room needs a saved map first (one-time, from a terminal:
-`ros2 launch securebot_ros securebot_explore.launch.py room:="<name>"`, then press **START**).
+The web panel runs the robot from a phone or laptop: laps round a saved room, mapping new
+rooms, no-pass lines, and enrolling the faces the robot recognizes. The navbar at the top
+switches between the three pages: **Robot**, **Facial recognition manager** and
+**Map manager**. On a phone (screens narrower than 900 px) the navbar folds into the **≡** menu
+at the top left.
 
 ### Launching
 Plug in the ESP32 and the LiDAR, then on the robot:
@@ -49,58 +51,61 @@ Keep that terminal open and open one of the printed addresses, `:8080` included:
 laptop on the same network. `0.0.0.0` is not an address to browse to. Ctrl+C in that
 terminal stops the panel and the robot software. `--port <n>` picks another port;
 `--host 127.0.0.1` allows only the robot's own screen (use it on an untrusted network: anyone
-who can open the panel can drive the robot and enroll faces). Don't run robot launches from a terminal at the same time.
+who can open the panel can drive the robot and enroll faces). Don't run robot launches
+from a terminal at the same time.
 
 ### Using it
-1. Pick the **Room** and press **Power on**. Wait until the pill at the top reads **Ready**.
-2. Press **Start**. The robot drives its lanes; watch it on the **Map** and the **Status** card.
-3. Press **Go home** when done (or **Stop** to halt where it is), then **Power off**.
+1. Pick the room in the box at the top (or **Show on main screen** in the Map manager).
+2. Press **Start**. If the robot software is off, Start powers it on, waits until the robot has
+   found itself on the map, then starts the laps; the pill at the top shows what it's doing.
+3. Press **Return home** when done (or **Stop** to halt where it is), then **Power off**.
 
-### Buttons
-**1 · Robot software**
+### Robot page
+| Control | What it does |
+|---|---|
+| **Start** | Starts the laps (powering the robot software on for the room first if needed: finds the ESP32's USB port, finds the robot on the map, records the run in `log/laps_runs/`). While mapping a new room: starts exploring. |
+| **Stop** | Stops the robot where it is (also cancels a Start that is still waiting to power on). While mapping: stops and saves the map. |
+| **Swap to camera / map** | Switches the big view between the map and the robot's webcam (not while face photos are being taken or the live face node has the camera). |
+| **Manual re-localize** | Stops the robot and finds where it is on the map again. Use it after moving the robot by hand; keep it still until it finishes. |
+| **Return home** | Stops the laps and drives back to home (the shortest clear way), then stops. |
+| **Power off** | Shuts the robot software down (asks first). |
+| **■ STOP** (corner) | Shown while the robot moves: same as **Stop**, always in reach. |
+| **Battery** | Shows `—%`: the robot has no battery sensor yet. |
+
+**Map view:** the room, the robot, the planned lanes, the path being driven now, home, the
+no-pass lines (black, outlined) and orange boxes where something blocked the robot. Tap a box
+to remove it; scroll or pinch to zoom, drag to pan, **Fit** to see it all.
+**Logs** (under the view): this run's log and the last 10 runs' files.
+
+### Map manager
+Every room as a map preview. Click to select, double-click to see it full screen (**Esc** or
+Back to return).
 
 | Control | What it does |
 |---|---|
-| **Room** | The saved room to run in. |
-| **Options → Home point** | `x,y` on the map to use as home. Blank: wherever **Start** is pressed. |
-| **Options → Rounds** | How many rounds of laps to drive. 0 keeps lapping until **Stop**. |
-| **Power on** | Starts the robot software for that room (no RViz or windows): finds the ESP32's USB port, finds the robot on the map and records the run in `log/laps_runs/`. Refused if the ESP32/LiDAR isn't plugged in or robot software is already running from a terminal. |
-| **Power off** | Stops the robot and shuts the robot software down (asks first). |
+| **Show on main screen** | Makes the selected room the one Start runs in. |
+| **Rename** | Renames the room. |
+| **Delete** | Removes the room; its map files and lines move to `maps/deleted/`. |
+| **Add** | Maps a new room: name it, put the robot in the room, press **Start** on the Robot page and it explores on its own while the map grows on screen. **Stop** (or a fully scanned room) saves it as that room. |
+| **Edit** | Highlights the previews; pick one to draw **no-pass lines** on it full screen: drag to draw a line (the robot treats it as a wall), **Move** (or two fingers / right-drag) to pan, **Undo**, **Delete all lines**, **Save**. **Esc** leaves, asking first if lines are unsaved. Saving while the robot runs in that room re-plans with the new lines. |
 
-**2 · Drive** (needs **Power on**)
-
-| Control | What it does |
-|---|---|
-| **Start** | Starts the laps from where the robot stands. Clears last run's obstacle boxes. |
-| **Stop** | Stops the robot where it is. |
-| **Go home** | Stops the laps and drives back to home (the shortest clear way), then stops. |
-| **Re-localize** | Stops the robot and finds where it is on the map again. Use it after moving the robot by hand; keep it still until it finishes. |
-| **■ STOP** (corner) | Shown while the robot is driving: same as **Stop**, always in reach. |
-
-**Map:** the robot, the planned lanes, the path being driven now, home, and orange boxes where
-something blocked the robot (it plans round them). Tap a box to remove it.
-**Status:** laps state, what it's doing, round and lane, coverage, position and ESP32 link.
-**Log and past runs:** the robot software's log and the recorded runs.
-
-**Faces** (who counts as authorized; stop the live face node first, capture needs the camera)
+### Facial recognition manager
+Everyone the robot treats as authorized, with a photo each. Click to select, double-click to
+open their photos. Stop the live face node first: taking photos needs the camera.
 
 | Control | What it does |
 |---|---|
-| People list | Everyone enrolled and how many photos each has ("N in database" means a rebuild is due). |
-| **Add or update a person → Name** | New name adds a person; an existing name adds photos to them. |
-| **Photos to take** | 3–40 (default 15). |
-| **Start capture** | Takes photos from the camera. Only that person in view, 1–1.5 m away: look at the camera, then turn slowly left, right, up and down until the bar fills. The live view gives hints. |
-| **Stop** | Ends the capture early (keeps what was taken). |
-| **Add ticked photos** | Adds the ticked photos to that person. Flagged ones (look like someone else, unlike the rest) come unticked with the reason; also untick blurry ones. |
-| **Discard all** | Throws away this capture (kept aside in `captures/`). |
-| **Rebuild face database** | Re-encodes everyone's photos so new ones count. Backs up the old database and warns about people who look alike. Restart the live face node afterwards. |
+| **Add person** | Name, number of photos (3–40), **Start capture**: only that person in view, 1–1.5 m away; look at the camera, then turn slowly left, right, up and down until the bar fills. Then tick the photos to keep (flagged ones come unticked with the reason; untick blurry ones too) and **Add ticked photos**, or **Discard all**. |
+| **View captures** | The person's photos: **✕** deletes one, **Retake photos** takes a new set whose kept photos replace the old ones. |
+| **Delete person** | Removes the person (photos kept aside in `captures/`). |
+| **Update face database** | Shown when photos changed: re-encodes everyone so the changes count, backs up the old database and warns about people who look alike. Restart the live face node afterwards. |
 
 ### Troubleshooting
 - **"Cannot find the ESP32 USB port":** plug in both the ESP32 and the LiDAR, then retry.
 - **"Robot software started from a terminal is running":** Ctrl+C it there first.
-- **Robot is in the wrong place on the map:** **Re-localize** with the robot standing still.
+- **Robot is in the wrong place on the map:** **Manual re-localize** with the robot standing still.
 - **Gyro not found** (`imu not found ... SDA=0` in the log): power-cycle the robot; if it
-  persists, check the MPU-6050 wiring, then **Power off** / **Power on**.
+  persists, check the MPU-6050 wiring, then **Power off** and **Start** again.
 
 ## Contributing
 - Branch from `main` (`feat/<sprint>-<name>`) and open a PR; `main` needs owner review.

@@ -438,6 +438,11 @@ class LapsNode(Node):
             self.nopass.clear()
             self.drawing, self.draw_last = False, None
             self.nopass_changed()
+        elif what == 'reload':                 # the web panel saved new lines for this room
+            self.nopass.load()
+            self.get_logger().info(f'{len(self.nopass.lines)} no-pass line(s) reloaded from '
+                                   f'{self.nopass.path}')
+            self.nopass_changed()
         self.publish_nopass()
 
     def nopass_changed(self):

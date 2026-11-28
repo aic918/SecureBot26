@@ -174,7 +174,7 @@ def test_rebuild_backs_up_and_reads_the_report(setup):
         'pairs': [], 'backup': None}))
     s = finish(fe)
     assert 'rebuilt' in s['message'] and not s['database']['outdated']
-    assert s['people'] == [{'name': 'Balde', 'photos': 1, 'enrolled': 1}]
+    assert s['people'] == [{'name': 'Balde', 'photos': 1, 'enrolled': 1, 'cover': 'a.jpg'}]
 
 
 def test_a_review_survives_a_panel_restart(setup, tmp_path):
@@ -205,3 +205,95 @@ def test_venv_environment_puts_only_libcudss_first(tmp_path):
         (lib / pkg / 'lib' / so).write_bytes(b'')
     env = wf.venv_env(str(tmp_path / 'venv'), {'LD_LIBRARY_PATH': '/usr/lib'})
     assert env['LD_LIBRARY_PATH'] == f"{lib / 'cu12' / 'lib'}:/usr/lib"
+
+
+# ------------------------------------------------------------------------------ manage
+def reviewed(base, name, **keep):
+    """Write the review result for staged photos: file stem -> ticked."""
+    (base / 'staging' / name / '.review.json').write_text(json.dumps({'name': name, 'photos': [
+        {'file': f'{stem}.jpg', 'keep': k, 'reasons': [] if k else ['x'], 'notes': []}
+        for stem, k in keep.items()]}))
+
+
+def built(base, people):
+    (base / 'encodings').mkdir(exist_ok=True)
+    (base / 'encodings' / 'authorized_faces.pkl.report.json').write_text(json.dumps({
+        'time': 9e9, 'total': sum(people.values()),
+        'people': [{'name': n, 'photos': c} for n, c in people.items()], 'pairs': []}))
+
+
+def test_delete_one_photo_moves_it_aside_and_outdates_the_database(setup):
+    fe, _, base = setup
+    (base / 'authorized_faces' / 'Balde' / 'b.jpg').write_bytes(b'jpg')
+    built(base, {'Balde': 2})
+    assert not fe.state()['database']['outdated']
+    assert fe.photos('Balde') == ['a.jpg', 'b.jpg']
+    assert 'deleted' in fe.delete_photo('Balde', 'a.jpg').lower()
+    assert fe.photos('Balde') == ['b.jpg']
+    aside = [p for p in (base / 'captures').iterdir() if p.name.endswith('_Balde_deleted')]
+    assert len(aside) == 1 and (aside[0] / 'a.jpg').exists()          # not really gone
+    assert fe.state()['database']['outdated']           # 1 photo now, 2 in the database
+    with pytest.raises(ValueError):
+        fe.delete_photo('Balde', '../../x.jpg')
+    with pytest.raises(ValueError):
+        fe.delete_photo('../Balde', 'b.jpg')
+    with pytest.raises(ValueError):
+        fe.photos('Nobody')
+
+
+def test_delete_person_moves_the_folder_aside(setup):
+    fe, _, base = setup
+    built(base, {'Balde': 1})
+    fe.delete_person('Balde')
+    assert not (base / 'authorized_faces' / 'Balde').exists()
+    s = fe.state()
+    assert s['people'] == [] and s['database']['outdated']   # still in the database
+    with pytest.raises(ValueError):
+        fe.delete_person('Balde')
+
+
+def test_cannot_delete_someone_being_captured(setup):
+    fe, _, _ = setup
+    fe.start_capture('Balde', 5)
+    with pytest.raises(RuntimeError):
+        fe.delete_person('Balde')
+    with pytest.raises(RuntimeError):
+        fe.delete_photo('Balde', 'a.jpg')
+
+
+def test_retake_replaces_the_old_photos_at_keep(setup):
+    fe, _, base = setup
+    fe.start_capture('Balde', 5, replace=True)
+    assert fe.state()['replace'] == 'Balde'
+    stage(base, 'Balde', ['n1.jpg', 'n2.jpg'])
+    finish(fe)                                        # capture done -> review
+    reviewed(base, 'Balde', n1=True, n2=True)
+    finish(fe)
+    msg = fe.keep('Balde', ['n1.jpg'])
+    assert 'replacing the 1 old' in msg
+    assert fe.photos('Balde') == ['n1.jpg']
+    replaced = [p for p in (base / 'captures').iterdir() if p.name.endswith('_replaced')]
+    assert (replaced[0] / 'a.jpg').exists()
+    assert fe.state()['replace'] is None
+
+
+def test_plain_add_keeps_the_old_photos(setup):
+    fe, _, base = setup
+    fe.start_capture('Balde', 5)
+    stage(base, 'Balde', ['n1.jpg'])
+    finish(fe)
+    reviewed(base, 'Balde', n1=True)
+    finish(fe)
+    fe.keep('Balde', ['n1.jpg'])
+    assert fe.photos('Balde') == ['a.jpg', 'n1.jpg']
+
+
+def test_retake_keeping_nothing_leaves_the_old_photos(setup):
+    fe, _, base = setup
+    fe.start_capture('Balde', 5, replace=True)
+    stage(base, 'Balde', ['n1.jpg'])
+    finish(fe)
+    reviewed(base, 'Balde', n1=False)
+    finish(fe)
+    fe.keep('Balde', [])
+    assert fe.photos('Balde') == ['a.jpg']

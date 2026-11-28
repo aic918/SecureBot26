@@ -12,14 +12,22 @@ laps: a browser on the same network opens http://<robot>:8080 and gets
   the live map               the room's map image, robot pose, lanes, boxes and home
   Power off                  Ctrl+C (SIGINT) to the launch, then SIGTERM / SIGKILL
   Faces                      enroll people for face recognition (web_faces.FaceEnroller):
-                             capture from the camera, check, keep, rebuild the database
+                             capture from the camera, check, keep, rebuild the database,
+                             delete or retake a person's photos
+  Map manager                rename / delete rooms, draw no-pass lines on a room's map, and
+                             Add: map a new room (the explore launch, its live SLAM map)
+  Camera view                the webcam while someone watches it (web_camera.CameraFeed)
+
+The page's Start works from off: it powers the laps launch on for the active room, waits until
+the robot has found itself on the map, then starts the laps.
 
 PanelApp holds that state and answers the HTTP API (make_server); the ROS side is passed in
 as a `bridge` (web_panel.RosBridge on the robot, a fake one in the tests) with
-send_command(cmd), click(x, y) and snapshot() -> dict.
+send_command(cmd, target='laps'|'explore'), click(x, y) and snapshot(kind) -> dict.
 """
 import glob
 import json
+import math
 import os
 import shutil
 import signal
@@ -30,9 +38,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 import cv2
+import numpy as np
 import yaml
 
-from securebot_ros.web_faces import FaceEnroller
+from securebot_ros import nopass as npz
+from securebot_ros import room_store as rs
+from securebot_ros.web_camera import CameraFeed
+from securebot_ros.web_faces import FaceEnroller, camera_in_use
 
 WS = os.path.expanduser('~/securebot_ws')
 MAPS_DIR = os.path.join(WS, 'maps')
@@ -44,6 +56,8 @@ SERIAL_DIR = '/dev/serial/by-path'
 LIDAR_PORT = '/dev/serial/by-path/platform-3610000.usb-usb-0:2.2:1.0-port0'
 
 COMMANDS = ('start', 'stop', 'home')
+MAX_NOPASS = 500              # lines per room (a sanity limit for what the page sends)
+DELETED_DIR = 'deleted'       # maps/deleted/: where Delete moves a room's map files
 STATUS_FRESH = 3.0            # s: /laps/status older than this = laps node not answering
 STOP_GRACE = (20.0, 5.0)      # s after SIGINT, then after SIGTERM, before SIGKILL
 
@@ -121,6 +135,14 @@ def launch_command(yaml_path, room, port, home='', rounds=0, near=None):
     return cmd
 
 
+def explore_command(room, port):
+    """The explore launch, as the panel runs it: no RViz, no Tk windows; it saves the map as
+    `room` when the room is scanned or Stop is pressed."""
+    return ['ros2', 'launch', 'securebot_ros', 'securebot_explore.launch.py',
+            f'room:={room}', f'esp32_port:={port}', 'rviz:=false', 'panel:=web',
+            'rooms:=false']
+
+
 def last_pose(runs_dir, room):
     """(x, y) where the newest recorded run in `room` ended (meta_<run>.json names the room,
     track_<run>.csv the poses), or None."""
@@ -179,12 +201,16 @@ class StackManager:
         self.record = record
         self.proc = self.recorder = None
         self.room = self.run_name = self.log_path = None
+        self.kind = 'laps'                       # what is running: 'laps' or 'explore'
         self.state, self.message = 'off', ''
         self.lock = threading.Lock()
         self.log_file = None
         self._loc_path, self._loc_offset, self._loc = None, 0, (None, '')
 
-    def start(self, room, yaml_path, port, home='', rounds=0, name=None, near=None):
+    def start(self, room, yaml_path, port, home='', rounds=0, name=None, near=None,
+              kind='laps'):
+        """Start the laps launch for `room` (kind 'laps') or map it (kind 'explore':
+        yaml_path unused, the map is saved as `room`)."""
         with self.lock:
             if self.state in ('starting', 'running', 'stopping'):
                 raise RuntimeError(f'The robot is already {self.state}')
@@ -193,26 +219,31 @@ class StackManager:
             self.log_path = os.path.join(self.runs_dir, f'run_{self.run_name}.log')
             self.log_file = open(self.log_path, 'w')
             with open(os.path.join(self.runs_dir, f'meta_{self.run_name}.json'), 'w') as f:
-                json.dump({'room': room, 'map': yaml_path}, f)
+                json.dump({'room': room, 'map': yaml_path, 'kind': kind}, f)
             prune_runs(self.runs_dir)             # the new run is the newest: it is kept
-            self.proc = self.popen(launch_command(yaml_path, room, port, home, rounds, near),
-                                   stdout=self.log_file, stderr=subprocess.STDOUT,
+            cmd = explore_command(room, port) if kind == 'explore' else \
+                launch_command(yaml_path, room, port, home, rounds, near)
+            self.proc = self.popen(cmd, stdout=self.log_file, stderr=subprocess.STDOUT,
                                    stdin=subprocess.DEVNULL, start_new_session=True)
             self.recorder = None
+            self.kind = kind
             rec = os.path.join(self.tools_dir, 'run_recorder.py')
-            if self.record and os.path.exists(rec):
+            if self.record and kind == 'laps' and os.path.exists(rec):
                 self.recorder = self.popen(
                     ['python3', rec, '--name', self.run_name, '--dir', self.runs_dir],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     stdin=subprocess.DEVNULL, start_new_session=True)
             self.room = room
-            self.state, self.message = 'starting', f'Starting up in {room}'
+            self.state, self.message = 'starting', (
+                f'Starting up to map {room}' if kind == 'explore' else f'Starting up in {room}')
 
     def mark_running(self):
         """The laps node answers: starting -> running."""
         with self.lock:
             if self.state == 'starting':
-                self.state, self.message = 'running', f'Ready in {self.room}'
+                self.state, self.message = 'running', (
+                    f'Ready to map {self.room}: press Start' if self.kind == 'explore'
+                    else f'Ready in {self.room}')
 
     def poll(self):
         """Notice a launch that ended by itself (crash, Ctrl+C elsewhere)."""
@@ -386,13 +417,44 @@ def thin_path(points, max_points=1500):
     return out
 
 
+def occupancy_png(data, width, height):
+    """A nav_msgs/OccupancyGrid's cells (row 0 = bottom, -1 unknown, 0..100) as a PNG the way
+    map_saver writes maps (free 254, wall 0, unknown 205; row 0 = top)."""
+    grid = np.asarray(data, dtype=np.int16).reshape(height, width)
+    img = np.full((height, width), 205, np.uint8)
+    img[(grid >= 0) & (grid <= 25)] = 254
+    img[grid >= 65] = 0
+    ok, png = cv2.imencode('.png', np.flipud(img))
+    if not ok:
+        raise ValueError('cannot encode the live map')
+    return png.tobytes()
+
+
+def parse_lines(lines):
+    """No-pass lines from the page, [[[x, y], [x, y]], ...] -> [((x, y), (x, y))]; ValueError
+    if malformed."""
+    if not isinstance(lines, list) or len(lines) > MAX_NOPASS:
+        raise ValueError(f'lines must be a list of up to {MAX_NOPASS} lines')
+    out = []
+    for line in lines:
+        try:
+            (ax, ay), (bx, by) = line
+            a, b = (float(ax), float(ay)), (float(bx), float(by))
+        except (TypeError, ValueError):
+            raise ValueError('Each line is [[x1, y1], [x2, y2]]') from None
+        if not all(math.isfinite(v) and abs(v) < 1e4 for v in a + b):
+            raise ValueError('Line ends must be finite map coordinates')
+        out.append((a, b))
+    return out
+
+
 # ------------------------------------------------------------------------------ the app
 class PanelApp:
     """The panel's state and actions, used by the HTTP handler."""
 
     def __init__(self, bridge, stack=None, maps_dir=MAPS_DIR, runs_dir=RUNS_DIR,
                  tools_dir=TOOLS_DIR, ports=serial_ports, ps=None, clock=time.monotonic,
-                 spawn=None, faces=None):
+                 spawn=None, faces=None, camera=None):
         self.bridge, self.maps_dir, self.runs_dir = bridge, maps_dir, runs_dir
         self.faces = faces or FaceEnroller()
         self.tools_dir = tools_dir
@@ -402,18 +464,25 @@ class PanelApp:
                                                 text=True).stdout)
         self.spawn = spawn or (lambda target: threading.Thread(target=target,
                                                                daemon=True).start())
+        self.camera = camera or CameraFeed(busy=self.camera_busy)
         self.relocalizing = False
         self.reloc_text = ''
         self.map_cache = {}
+        self.active = None            # the room on the main screen (set_active)
+        self.pending_start = False    # Start pressed while off: start laps once localized
+        self.note = ''                # what the last Start-from-off is waiting for
+
+    def camera_busy(self):
+        """Why the camera view cannot open the camera now, or None."""
+        f = self.faces.state()
+        if f['busy'] == 'capture':
+            return 'The camera is taking face photos; the view comes back after that'
+        if camera_in_use(self.ps()):
+            return 'The live face node has the camera'
+        return None
 
     # actions -------------------------------------------------------------------------------
-    def power_on(self, room_name, home='', rounds=0):
-        room = find_room(load_rooms(self.maps_dir), room_name)
-        if room is None:
-            raise ValueError(f'Unknown room "{room_name}"')
-        home = parse_home(home)
-        if int(rounds) < 0:
-            raise ValueError('Rounds must be 0 (until Stop) or more')
+    def _ready_to_power_on(self):
         if self.stack.state in ('starting', 'running', 'stopping'):
             raise RuntimeError(f'The robot is already {self.stack.state}')
         if other_stack_running(self.ps()):
@@ -426,42 +495,203 @@ class PanelApp:
         reset = getattr(self.bridge, 'reset', None)
         if reset:
             reset()                       # forget the last run's lanes, boxes and home
+        return port
+
+    def power_on(self, room_name, home='', rounds=0):
+        room = find_room(load_rooms(self.maps_dir), room_name)
+        if room is None:
+            raise ValueError(f'Unknown room "{room_name}"')
+        home = parse_home(home)
+        if int(rounds) < 0:
+            raise ValueError('Rounds must be 0 (until Stop) or more')
+        port = self._ready_to_power_on()
         near = last_pose(self.stack.runs_dir, room['name'])
         self.stack.start(room['name'], room['yaml'], port, home, rounds, near=near)
+        self.active = room['name']
+        self.pending_start, self.note = False, ''
         return f'Starting up in {room["name"]}'
 
+    def start(self, room_name=''):
+        """The Start button. Off: power on for the room (default: the active one) and start
+        the laps once the robot has found itself. On: start (laps or exploring)."""
+        st = self.stack.state
+        if st == 'stopping':
+            raise RuntimeError('The robot software is shutting down; wait a moment')
+        if st in ('starting', 'running'):
+            room_name = room_name or self.stack.room
+            if self.stack.kind == 'laps' and room_name != self.stack.room:
+                raise RuntimeError(f'The robot is running in {self.stack.room}: Power off '
+                                   f'first to switch to {room_name}')
+            if st == 'starting':
+                if self.stack.kind == 'explore':
+                    raise RuntimeError('Still starting up: press Start when it says Ready')
+                self.pending_start = True
+                self.note = 'Starts the laps once the robot has found itself on the map'
+                return self.note
+            return self.command('start')
+        room_name = room_name or self.active_room()
+        if not room_name:
+            raise RuntimeError('No room yet: add one in the Map Manager')
+        self.power_on(room_name)
+        self.pending_start = True
+        self.note = 'Starts the laps once the robot has found itself on the map'
+        return f'Powering on in {room_name}; the laps start once it has found itself'
+
+    def explore(self, name):
+        """Map Manager's Add: power the explore launch on to map a new room called `name`."""
+        name = rs.clean_name(name)
+        store = rs.RoomStore(self.maps_dir)
+        if store.find(name):
+            raise RuntimeError(f'A room called "{name}" already exists: pick another name '
+                               'or delete it first')
+        port = self._ready_to_power_on()
+        self.stack.start(name, '', port, kind='explore')
+        self.active = name
+        self.pending_start, self.note = False, ''
+        return (f'Starting up to map {name}. Put the robot in the room, then press Start; '
+                'Stop saves the map')
+
+    def active_room(self):
+        """The room on the main screen: what runs, else the one picked, else the first."""
+        rooms = [r['name'] for r in load_rooms(self.maps_dir)]
+        if self.stack.state in ('starting', 'running', 'stopping') and self.stack.room:
+            return self.stack.room
+        if self.active in rooms:
+            return self.active
+        return rooms[0] if rooms else None
+
+    def set_active(self, room_name):
+        if find_room(load_rooms(self.maps_dir), room_name) is None:
+            raise ValueError(f'Unknown room "{room_name}"')
+        if self.stack.state in ('starting', 'running', 'stopping') and \
+                room_name != self.stack.room:
+            raise RuntimeError(f'The robot is running in {self.stack.room}: Power off first')
+        self.active = room_name
+        return f'{room_name} is on the main screen'
+
+    # map manager ---------------------------------------------------------------------------
+    def _room_in_use(self, name):
+        if self.stack.state in ('starting', 'running', 'stopping') and \
+                self.stack.room == name:
+            raise RuntimeError(f'The robot is using {name}: Power off first')
+
+    def maps(self):
+        """The rooms for the Map Manager: name, map stem, size, saved time, no-pass lines."""
+        out = []
+        for name, info in rs.RoomStore(self.maps_dir).entries():
+            if name is None or info is None:
+                continue
+            w, h = info.size_m
+            lines = npz.NoPass(npz.path_for(info.yaml_path)).lines
+            out.append({'name': name, 'map': info.stem, 'width_m': round(w, 1),
+                        'height_m': round(h, 1), 'modified': info.modified,
+                        'nopass': len(lines)})
+        return out
+
+    def rename_room(self, old, new):
+        self._room_in_use(old)
+        new = rs.RoomStore(self.maps_dir).rename(old, new)
+        if self.active == old:
+            self.active = new
+        return f'Renamed to {new}'
+
+    def delete_room(self, name):
+        """Forget the room and move its map files (and no-pass lines) to maps/deleted/."""
+        self._room_in_use(name)
+        store = rs.RoomStore(self.maps_dir)
+        room = store.find(name)
+        if room is None:
+            raise ValueError(f'There is no room called "{name}"')
+        stem = room['map']
+        info = rs.read_map(os.path.join(self.maps_dir, stem + '.yaml'))
+        files = [os.path.join(self.maps_dir, stem + '.yaml'),
+                 npz.path_for(os.path.join(self.maps_dir, stem + '.yaml'))]
+        if info and os.path.dirname(os.path.abspath(info.image_path)) == \
+                os.path.abspath(self.maps_dir):
+            files.append(info.image_path)
+        if not any(r['map'] == stem for r in store.rooms if r is not room):
+            trash = os.path.join(self.maps_dir, DELETED_DIR)
+            os.makedirs(trash, exist_ok=True)
+            stamp = time.strftime('%Y%m%d_%H%M%S')
+            for f in files:
+                if os.path.isfile(f):
+                    shutil.move(f, os.path.join(trash, f'{stamp}_{os.path.basename(f)}'))
+        store.remove(room['name'])
+        if self.active == room['name']:
+            self.active = None
+        return f'Deleted {room["name"]} (its map files are in maps/{DELETED_DIR}/)'
+
+    def nopass_lines(self, room_name):
+        room = find_room(load_rooms(self.maps_dir), room_name)
+        if room is None:
+            raise ValueError(f'Unknown room "{room_name}"')
+        np_ = npz.NoPass(npz.path_for(room['yaml']))
+        return {'width': np_.width, 'lines': [[list(a), list(b)] for a, b in np_.lines]}
+
+    def save_nopass(self, room_name, lines):
+        """Replace the room's no-pass lines; a laps run in that room re-plans with them."""
+        room = find_room(load_rooms(self.maps_dir), room_name)
+        if room is None:
+            raise ValueError(f'Unknown room "{room_name}"')
+        lines = parse_lines(lines)
+        np_ = npz.NoPass(npz.path_for(room['yaml']))
+        np_.lines = lines
+        np_.save()
+        live = self.stack.state in ('starting', 'running') and \
+            self.stack.kind == 'laps' and self.stack.room == room['name']
+        if live:
+            self.bridge.send_command('nopass reload')
+        return f'Saved {len(lines)} no-pass line{"s" if len(lines) != 1 else ""}' + (
+            ': the robot re-plans with them' if live else '')
+
     def power_off(self):
+        self.pending_start, self.note = False, ''
         if self.stack.state in ('off', 'crashed'):
             self.stack.state, self.stack.message = 'off', 'Robot software is off'
             return 'Already off'
-        self.bridge.send_command('stop')
+        if self.stack.kind == 'explore':
+            self.bridge.send_command('stop', 'explore')
+        else:
+            self.bridge.send_command('stop')
         self.spawn(self.stack.stop)
         return 'Shutting down'
 
     def command(self, cmd):
         if cmd not in COMMANDS:
             raise ValueError(f'Unknown command "{cmd}"')
+        if cmd == 'stop':
+            self.pending_start, self.note = False, ''
         if self.stack.state not in ('running', 'starting'):
-            raise RuntimeError('Power on the robot first')
-        self.bridge.send_command(cmd)
-        return {'start': 'Starting laps', 'stop': 'Stopping',
+            if cmd == 'stop':
+                return 'The robot software is off: nothing is moving'
+            raise RuntimeError('Press Start first (the robot software is off)')
+        explore = self.stack.kind == 'explore'
+        if explore:
+            self.bridge.send_command(cmd, 'explore')
+        else:
+            self.bridge.send_command(cmd)
+        return {'start': 'Exploring' if explore else 'Starting laps',
+                'stop': 'Stopping; the map is saved' if explore else 'Stopping',
                 'home': 'Going home'}[cmd]
 
     def click(self, x, y):
-        if self.stack.state != 'running':
+        if self.stack.state != 'running' or self.stack.kind != 'laps':
             raise RuntimeError('Power on the robot first')
         self.bridge.click(float(x), float(y))
         return 'Removing the box there (if any)'
 
     def relocalize(self):
         if self.stack.state != 'running':
-            raise RuntimeError('Power on the robot first')
+            raise RuntimeError('Press Start first (the robot software is off)')
+        if self.stack.kind == 'explore':
+            raise RuntimeError('While mapping, the robot is always on its own map')
         if self.relocalizing:
             raise RuntimeError('Already re-localizing')
         room = find_room(load_rooms(self.maps_dir), self.stack.room)
         if room is None:
             raise RuntimeError('Room map not found')
         self.bridge.send_command('stop')
+        self.pending_start = False
         self.relocalizing, self.reloc_text = True, 'Finding the robot on the map'
         cmd = ['python3', os.path.join(self.tools_dir, 'global_localize.py'),
                '--map', room['yaml'], '--tries', '3', '--turn']
@@ -481,7 +711,8 @@ class PanelApp:
     # state ---------------------------------------------------------------------------------
     def state(self):
         stack_state = self.stack.poll()
-        robot = self.bridge.snapshot() if stack_state in ('starting', 'running') else {}
+        kind = self.stack.kind
+        robot = self.bridge.snapshot(kind) if stack_state in ('starting', 'running') else {}
         status = robot.get('status')
         age = robot.get('status_age')
         fresh = status is not None and age is not None and age < STATUS_FRESH
@@ -492,11 +723,28 @@ class PanelApp:
         if self.relocalizing or self.reloc_text:
             loc_state = 'searching' if self.relocalizing else loc_state
             loc_text = self.reloc_text or loc_text
+        if stack_state not in ('starting', 'running'):
+            self.pending_start, self.note = False, ''
+        elif self.pending_start and fresh and kind == 'laps' and not self.relocalizing:
+            if loc_state == 'ok':
+                self.pending_start, self.note = False, ''
+                self.bridge.send_command('start')
+            elif loc_state == 'failed':
+                self.pending_start = False
+                self.note = ('Not started: the robot could not find itself. Use Manual '
+                             're-localize, then Start')
         return {
             'stack': {'state': stack_state, 'message': self.stack.message,
                       'room': self.stack.room, 'run': self.stack.run_name,
-                      'log': self.stack.log_tail(30)},
-            'laps': status if fresh else None,
+                      'kind': kind, 'log': self.stack.log_tail(30)},
+            'active': self.active_room(),
+            'pending_start': self.pending_start,
+            'note': self.note,
+            'battery': None,              # no battery sensor yet (a hardware job)
+            'camera': self.camera.state(),
+            'live_map': robot.get('live_map'),
+            'laps': status if fresh and kind == 'laps' else None,
+            'explore': status if fresh and kind == 'explore' else None,
             'connected': fresh,
             'localization': {'state': loc_state, 'text': loc_text,
                              'busy': self.relocalizing},
@@ -510,6 +758,12 @@ class PanelApp:
             'port': esp32_port(self.ports()),
             'faces': self.faces.state(),
         }
+
+    def live_map_png(self):
+        """The SLAM map being built (exploring), as PNG bytes, or None."""
+        get = getattr(self.bridge, 'live_png', None)
+        exploring = self.stack.kind == 'explore' and self.stack.state in ('starting', 'running')
+        return get() if get and exploring else None
 
     def map_for(self, room_name):
         room = find_room(load_rooms(self.maps_dir), room_name)
@@ -561,7 +815,24 @@ class Handler(BaseHTTPRequestHandler):
                 _, meta = self.app.map_for(q.get('room', [''])[0])
                 return self._send(200, meta)
             if url.path == '/api/runs':
-                return self._send(200, list_runs(self.app.runs_dir))
+                return self._send(200, list_runs(self.app.runs_dir, limit=KEEP_LOGS))
+            if url.path == '/api/maps':
+                return self._send(200, self.app.maps())
+            if url.path == '/api/nopass':
+                return self._send(200, self.app.nopass_lines(q.get('room', [''])[0]))
+            if url.path == '/api/live_map.png':
+                png = self.app.live_map_png()
+                return self._send(200, png, 'image/png') if png else \
+                    self._error(404, 'No live map yet')
+            if url.path == '/api/camera.jpg':
+                try:
+                    jpg = self.app.camera.frame()
+                except RuntimeError as e:
+                    return self._error(409, str(e))
+                return self._send(200, jpg, 'image/jpeg') if jpg else \
+                    self._error(503, 'The camera is starting')
+            if url.path == '/api/faces/photos':
+                return self._send(200, self.app.faces.photos(q.get('name', [''])[0]))
             if url.path == '/api/faces/preview.jpg':
                 jpg = self.app.faces.preview()
                 return self._send(200, jpg, 'image/jpeg') if jpg else \
@@ -593,7 +864,24 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(400, 'Bad JSON')
         path = urlparse(self.path).path
         try:
-            if path == '/api/power/on':
+            if path == '/api/start':
+                text = self.app.start(str(body.get('room', '')))
+            elif path == '/api/active':
+                text = self.app.set_active(str(body.get('room', '')))
+            elif path == '/api/maps/rename':
+                text = self.app.rename_room(str(body.get('old', '')), str(body.get('new', '')))
+            elif path == '/api/maps/delete':
+                text = self.app.delete_room(str(body.get('name', '')))
+            elif path == '/api/maps/add':
+                text = self.app.explore(str(body.get('name', '')))
+            elif path == '/api/nopass':
+                text = self.app.save_nopass(str(body.get('room', '')), body.get('lines'))
+            elif path == '/api/faces/delete_photo':
+                text = self.app.faces.delete_photo(str(body.get('name', '')),
+                                                   str(body.get('file', '')))
+            elif path == '/api/faces/delete_person':
+                text = self.app.faces.delete_person(str(body.get('name', '')))
+            elif path == '/api/power/on':
                 text = self.app.power_on(body.get('room', ''), body.get('home', ''),
                                          body.get('rounds', 0))
             elif path == '/api/power/off':
@@ -606,7 +894,8 @@ class Handler(BaseHTTPRequestHandler):
                 text = self.app.relocalize()
             elif path == '/api/faces/capture':
                 text = self.app.faces.start_capture(body.get('name', ''),
-                                                    body.get('count', 15))
+                                                    body.get('count', 15),
+                                                    bool(body.get('replace', False)))
             elif path == '/api/faces/stop':
                 text = self.app.faces.stop_capture()
             elif path == '/api/faces/keep':
