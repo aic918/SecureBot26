@@ -4,6 +4,8 @@
 //
 // Jetson -> ESP32
 //   M,<left>,<right>   signed wheel PWM, 10-bit duty (0-1023), clamped to +/-MAX_PWM
+//   V,<left>,<right>   signed wheel SPEEDS in encoder ticks/s (+ = forward): each wheel's PWM
+//                      is adjusted every SPEED_PERIOD_MS until its encoder matches
 //   stop | forward | patrol | backward | left | right   (legacy text commands)
 //   speed <0-MAX_PWM>  PWM used by the legacy commands
 //   freq <Hz>          motor PWM frequency, MIN_PWM_FREQ_HZ..MAX_PWM_FREQ_HZ, until reboot
@@ -28,17 +30,20 @@
 #include <Wire.h>
 
 // ==================== PINOUT ====================
-// Motor driver (two channels). The RIGHT motor is on channel A and the LEFT motor
-// on channel B. "A"/"B" below is the driver's per-motor direction input pair.
-// Right motor (driver channel A)
-const int RIGHT_EN = 26;
-const int RIGHT_IN_A = 25;    // IN1
-const int RIGHT_IN_B = 33;    // IN2
+// Motor driver: TI DRV8262 (dual H-bridge). It has no EN pins: speed and direction both go
+// on IN1..IN4, so each IN pin gets its own PWM channel. GPIO 26 / 27 (the L298N's ENA / ENB)
+// are not connected on this board and are left alone. The RIGHT motor is on H-bridge 1
+// (IN1/IN2) and the LEFT motor on H-bridge 2 (IN3/IN4).
+const int RIGHT_IN_A = 32;    // IN1
+const int RIGHT_IN_B = 26;    // IN2
+const int LEFT_IN_A = 25;     // IN3
+const int LEFT_IN_B = 33;     // IN4
 
-// Left motor (driver channel B)
-const int LEFT_EN = 27;
-const int LEFT_IN_A = 32;     // IN3
-const int LEFT_IN_B = 14;     // IN4
+// The board's MODE2 pin (DRV8262 pin 29) picks the input scheme, latched at power-up:
+//   floating or high -> PWM mode:   IN1/IN2 = 1/0 forward, 0/1 reverse, 1/1 brake, 0/0 coast
+//   grounded         -> PH/EN mode: IN1 = enable (0 = brake), IN2 = direction (1 = forward)
+// Set this to match the board (false = PWM mode, the default with MODE2 floating).
+const bool DRIVER_PH_EN = false;
 
 // Wiring polarity, as verified with the wheels off the ground using the senior1typetest
 // sketch (RIGHT_FORWARD_IN1_HIGH = true, LEFT_FORWARD_IN3_HIGH = false): forward is IN1 high
@@ -47,7 +52,7 @@ const int LEFT_IN_B = 14;     // IN4
 const bool LEFT_REVERSED = true;
 const bool RIGHT_REVERSED = false;
 
-// Encoder pins - not used yet. GPIO 34/35 are input-only with no internal pull-ups.
+// Encoder pins (see ENCODERS_SWAPPED). GPIO 34/35 are input-only with no internal pull-ups.
 // Never use a boot-strapping pin here (0, 2, 5, 12, 15): an encoder holding GPIO 12 high at
 // reset made the flash unreadable and the board would not boot or accept uploads.
 const int RIGHT_ENCODER_BLUE = 13;
@@ -62,9 +67,23 @@ const int LEFT_ENCODER_WHITE = 35;
 #define ULTRA_RIGHT_ECHO 17
 
 // Encoders: the two channels of each wheel are decoded together (x4 quadrature), so which
-// wire is A and which is B only decides the sign, set by *_ENCODER_REVERSED.
+// wire is A and which is B only decides the sign. Measured 2026-11-22 (driving and spinning,
+// checked against the gyro): the counter on the pins named LEFT_* (GPIO 34/35) follows the
+// PHYSICAL RIGHT wheel and counts backwards, the one on RIGHT_* (13/18) the physical left
+// wheel. The pin names stay with the pins (34/35 need external pull-ups); the W line swaps
+// them so it reports the physical wheels. *_REVERSED apply to the physical wheels, so that
+// + = that wheel forward.
+const bool ENCODERS_SWAPPED = true;
+
+// Which end is the robot's front. 2026-11-22: "forward" drove the robot towards its back (away
+// from the ultrasonics, which face the real front). Turning the robot's frame round makes the
+// other end the front: the robot's left wheel is then the old right one, run backwards, and
+// the other way round, for the motors (applyMotors) and the encoders (readWheelTicks) alike, so
+// forward is forward again and a left turn still turns left. Everything else (M / V commands,
+// the speed loop, patrol, the obstacle gate on the ultrasonics) works in this robot frame.
+const bool FRONT_FLIPPED = true;
 const bool LEFT_ENCODER_REVERSED = false;
-const bool RIGHT_ENCODER_REVERSED = false;
+const bool RIGHT_ENCODER_REVERSED = true;
 
 // IMU: MPU-6050 board (HW-123 / GY-521) on the ESP32's default I2C pins, AD0 low
 const int IMU_SDA = 21;
@@ -78,11 +97,15 @@ const int PWM_FREQUENCY_HZ = 10000;
 const int MIN_PWM_FREQ_HZ = 50;
 const int MAX_PWM_FREQ_HZ = 25000;
 const int PWM_BITS = 10;
-const int LEFT_PWM_CHANNEL = 1;       // LEDC channels (Arduino-ESP32 2.x API)
-const int RIGHT_PWM_CHANNEL = 0;
-const int MAX_PWM = 665;              // hard cap on any wheel PWM, every command path
-const int DEFAULT_SPEED_PWM = 660;    // legacy-command speed until "speed N" is received
-const unsigned long BRAKE_MS = 150;   // short brake after a motor stops (see outputMotor)
+const int RIGHT_A_CHANNEL = 0;        // LEDC channels (Arduino-ESP32 2.x API), one per IN pin
+const int RIGHT_B_CHANNEL = 1;
+const int LEFT_A_CHANNEL = 2;
+const int LEFT_B_CHANNEL = 3;
+const int FULL_DUTY = (1 << 10) - 1;  // 1023: an IN pin held high (100 % duty)
+const int MAX_PWM = 800;              // hard cap on any wheel PWM, every command path
+                                      // (655 until 2026-11-22: laps at 1.25 mph = 0.56 m/s need ~730
+                                      //  on the DRV8262, plus headroom for the speed loop)
+const int DEFAULT_SPEED_PWM = 650;    // legacy-command speed until "speed N" is received
 
 const unsigned long WATCHDOG_MS = 250;           // stop if no valid command this long
                                                  // (the ROS bridge resends every 100 ms)
@@ -95,10 +118,29 @@ const float IMU_LSB_PER_DPS = 65.5;              // gyro range +/-500 deg/s
 const unsigned long IMU_PERIOD_US = 5000;        // sample the gyro at 200 Hz
 const unsigned long IMU_TELEMETRY_MS = 50;       // G line at 20 Hz
 const int IMU_CALIBRATE_SAMPLES = 400;           // ~1.2 s at boot, motors stopped
+const unsigned long IMU_WARMUP_MS = 1000;        // the gyro reads off for a while after waking
+const float IMU_BIAS_MAX_DPS = 5.0;              // healthy boots: +0.3..+0.5 deg/s on this board
+const float IMU_CAL_MAX_SPREAD_DPS = 1.0;        // std dev of the samples: more = robot moving
+const int IMU_CAL_TRIES = 5;                     // then give up (gyro off) rather than run wrong
 const int IMU_MAX_FAILS = 20;                    // consecutive bad reads -> IMU off
 const unsigned long IMU_STILL_MS = 1000;         // motors off this long -> refine the bias
 const float IMU_STILL_DPS = 1.0;                 // ... while the gyro reads below this
 const float IMU_BIAS_RATE = 0.002;               // bias update per sample when still
+
+// Wheel speed control (V command). Measured 2026-11-22 (DRV8262, robot on the floor): a wheel
+// at rest needs ~550 PWM to break free, but once rolling it needs far less: ~230 + 0.75 PWM per
+// tick/s (300 -> ~95 t/s, 400 -> ~200, 500 -> ~365). The two motors differ by up to 50 %, and
+// differently forward and backward, so each wheel has its own PI loop on top of that
+// feed-forward, and a stopped wheel that should turn gets at least SPEED_KICK_PWM to start.
+const unsigned long SPEED_PERIOD_MS = 40;
+const float SPEED_FF_START = 230.0;      // PWM at which a ROLLING wheel just keeps turning
+const float SPEED_FF_SLOPE = 0.75;       // PWM per tick/s above that
+const float SPEED_KP = 0.5;              // PWM per tick/s of speed error
+const float SPEED_KI = 1.5;              // PWM per tick of accumulated error
+const float SPEED_I_LIMIT = 150.0;       // PWM the integral may add or take away
+const float SPEED_KICK_PWM = 580.0;      // at least this while a wheel that should turn ...
+const float SPEED_KICK_BELOW_TPS = 40.0; // ... is slower than this (static friction)
+const int MAX_SPEED_TPS = 1000;          // ticks/s (~0.9 m/s)
 
 const float STOP_DISTANCE_FEET = 1.0;    // 12 inches
 const float CLEAR_DISTANCE_FEET = 1.5;   // 18 inches
@@ -108,14 +150,22 @@ const unsigned long AVOID_REVERSE_MS = 800;
 const unsigned long AVOID_ROTATE_TIMEOUT_MS = 4000;  // give up if never clear
 const unsigned long AVOID_SETTLE_MS = 300;
 
-enum Mode { MODE_STOP, MODE_FORWARD, MODE_PATROL, MODE_BACKWARD, MODE_LEFT, MODE_RIGHT, MODE_DRIVE };
-const char *MODE_NAMES[] = {"stop", "forward", "patrol", "backward", "left", "right", "drive"};
+enum Mode { MODE_STOP, MODE_FORWARD, MODE_PATROL, MODE_BACKWARD, MODE_LEFT, MODE_RIGHT, MODE_DRIVE,
+            MODE_SPEED };
+const char *MODE_NAMES[] = {"stop", "forward", "patrol", "backward", "left", "right", "drive",
+                            "speed"};
 
 // ==================== STATE ====================
 Mode mode = MODE_STOP;
 int speedPWM = DEFAULT_SPEED_PWM;
 int pwmFrequencyHz = PWM_FREQUENCY_HZ;
 int driveLeft = 0;                 // requested by M,l,r
+int targetTps[2] = {0, 0};         // requested by V,l,r: [physical left, physical right]
+float measuredTps[2] = {0, 0};     // encoder speeds, filtered
+float speedInteg[2] = {0, 0};      // PI integral, ticks
+long lastSpeedTicks[2] = {0, 0};
+unsigned long lastSpeedMs = 0;
+int speedOut[2] = {0, 0};          // PWM the speed loop chose
 int driveRight = 0;
 int appliedLeft = 0;               // what is actually on the motors
 int appliedRight = 0;
@@ -162,10 +212,13 @@ void setMode(Mode newMode);
 void checkWatchdog();
 void updateSensors();
 void controlMotors();
+void readWheelTicks(long &left, long &right);
+void resetSpeedControl();
+void updateSpeedControl();
 void runAvoidance(int &left, int &right);
 void applyMotors(int left, int right);
-void outputMotor(int m, int channel, int inA, int inB, int pwm);
-void setMotor(int channel, int inA, int inB, int pwm);
+void outputMotor(int m, int chA, int chB, int pwm);
+void setMotor(int chA, int chB, int pwm);
 void sendTelemetry();
 void imuWireCheck(int &sda, int &scl);
 bool imuBusRecover();
@@ -184,16 +237,13 @@ bool pathClear();
 // ==================== SETUP ====================
 void setup() {
   // Motors first, so nothing can spin while the rest of setup runs.
-  pinMode(LEFT_EN, OUTPUT);
-  pinMode(LEFT_IN_A, OUTPUT);
-  pinMode(LEFT_IN_B, OUTPUT);
-  pinMode(RIGHT_EN, OUTPUT);
-  pinMode(RIGHT_IN_A, OUTPUT);
-  pinMode(RIGHT_IN_B, OUTPUT);
-  ledcSetup(LEFT_PWM_CHANNEL, PWM_FREQUENCY_HZ, PWM_BITS);
-  ledcSetup(RIGHT_PWM_CHANNEL, PWM_FREQUENCY_HZ, PWM_BITS);
-  ledcAttachPin(LEFT_EN, LEFT_PWM_CHANNEL);
-  ledcAttachPin(RIGHT_EN, RIGHT_PWM_CHANNEL);
+  const int inPins[4] = {RIGHT_IN_A, RIGHT_IN_B, LEFT_IN_A, LEFT_IN_B};
+  const int inChannels[4] = {RIGHT_A_CHANNEL, RIGHT_B_CHANNEL, LEFT_A_CHANNEL, LEFT_B_CHANNEL};
+  for (int i = 0; i < 4; i++) {
+    ledcSetup(inChannels[i], PWM_FREQUENCY_HZ, PWM_BITS);
+    ledcWrite(inChannels[i], 0);
+    ledcAttachPin(inPins[i], inChannels[i]);
+  }
   applyMotors(0, 0);
 
   pinMode(ULTRA_LEFT_TRIG, OUTPUT);
@@ -280,8 +330,10 @@ void handleCommand(char *cmd) {
     encoderScope();                           // diagnostic: stops the motors, takes ~3 s
   } else if (strncmp(cmd, "freq ", 5) == 0) {
     int hz = constrain(atoi(cmd + 5), MIN_PWM_FREQ_HZ, MAX_PWM_FREQ_HZ);
-    if (ledcChangeFrequency(LEFT_PWM_CHANNEL, hz, PWM_BITS) != 0 &&
-        ledcChangeFrequency(RIGHT_PWM_CHANNEL, hz, PWM_BITS) != 0) {
+    if (ledcChangeFrequency(RIGHT_A_CHANNEL, hz, PWM_BITS) != 0 &&
+        ledcChangeFrequency(RIGHT_B_CHANNEL, hz, PWM_BITS) != 0 &&
+        ledcChangeFrequency(LEFT_A_CHANNEL, hz, PWM_BITS) != 0 &&
+        ledcChangeFrequency(LEFT_B_CHANNEL, hz, PWM_BITS) != 0) {
       pwmFrequencyHz = hz;
       Serial.print("I,freq ");
       Serial.println(pwmFrequencyHz);
@@ -289,6 +341,22 @@ void handleCommand(char *cmd) {
       Serial.println("E,freq not supported");
     }
     heartbeat = false;
+  } else if (strncmp(cmd, "V,", 2) == 0) {
+    int l = 0;
+    int r = 0;
+    if (sscanf(cmd, "V,%d,%d", &l, &r) == 2) {
+      l = constrain(l, -MAX_SPEED_TPS, MAX_SPEED_TPS);
+      r = constrain(r, -MAX_SPEED_TPS, MAX_SPEED_TPS);
+      if (mode != MODE_SPEED) resetSpeedControl();
+      for (int m = 0; m < 2; m++) {
+        int t = m == 0 ? l : r;
+        if ((t > 0) != (targetTps[m] > 0) || t == 0) speedInteg[m] = 0;   // new direction
+        targetTps[m] = t;
+      }
+      setMode(MODE_SPEED);
+    } else {
+      valid = false;
+    }
   } else if (strncmp(cmd, "M,", 2) == 0) {
     int l = 0;
     int r = 0;
@@ -502,22 +570,50 @@ void setupImu() {
     }
     return;
   }
-  delay(100);                                // gyro start-up
-  long sum = 0;
-  int good = 0;
-  for (int i = 0; i < IMU_CALIBRATE_SAMPLES; i++) {
-    int16_t raw;
-    if (imuReadGyroZ(raw)) {
-      sum += raw;
-      good++;
+  // Bias calibration. Right after waking, the MPU-6050 here read several deg/s (once 41)
+  // off, and that offset was then subtracted for the whole run: the robot saw itself turning
+  // while still and spun in place correcting it. So: let it settle first, and only accept a
+  // bias that is plausible and measured while still (small spread); otherwise retry.
+  Serial.println("I,imu calibrating: keep the robot still");
+  delay(IMU_WARMUP_MS);
+  bool calibrated = false;
+  for (int attempt = 1; attempt <= IMU_CAL_TRIES && !calibrated; attempt++) {
+    double sum = 0, sumSq = 0;
+    int good = 0;
+    for (int i = 0; i < IMU_CALIBRATE_SAMPLES; i++) {
+      int16_t raw;
+      if (imuReadGyroZ(raw)) {
+        double dps = raw / IMU_LSB_PER_DPS;
+        sum += dps;
+        sumSq += dps * dps;
+        good++;
+      }
+      delay(3);
     }
-    delay(3);
+    if (good < IMU_CALIBRATE_SAMPLES / 2) {
+      Serial.println("E,imu not answering, gyro off");
+      return;
+    }
+    double mean = sum / good;
+    double spread = sqrt(max(0.0, sumSq / good - mean * mean));
+    if (fabs(mean) <= IMU_BIAS_MAX_DPS && spread <= IMU_CAL_MAX_SPREAD_DPS) {
+      imuBiasDps = (float)mean;
+      calibrated = true;
+    } else {
+      Serial.print("E,imu calibration rejected (try ");
+      Serial.print(attempt);
+      Serial.print("): bias ");
+      Serial.print(mean, 3);
+      Serial.print(" deg/s, spread ");
+      Serial.print(spread, 3);
+      Serial.println(" deg/s");
+      delay(300);
+    }
   }
-  if (good < IMU_CALIBRATE_SAMPLES / 2) {
-    Serial.println("E,imu not answering, gyro off");
+  if (!calibrated) {
+    Serial.println("E,imu calibration failed (robot moving or gyro faulty), gyro off");
     return;
   }
-  imuBiasDps = (float)sum / good / IMU_LSB_PER_DPS;
   imuOk = true;
   imuFails = 0;
   yawDeg = 0;
@@ -668,6 +764,18 @@ void controlMotors() {
       right = -speedPWM;
       break;
 
+    case MODE_SPEED:
+      updateSpeedControl();
+      left = speedOut[0];
+      right = speedOut[1];
+      // Failsafe: never drive net-forward into a confirmed close obstacle.
+      if (targetTps[0] + targetTps[1] > 0 && obstacleAhead()) {
+        left = 0;
+        right = 0;
+        speedInteg[0] = speedInteg[1] = 0;
+      }
+      break;
+
     case MODE_DRIVE:
       left = driveLeft;
       right = driveRight;
@@ -684,6 +792,64 @@ void controlMotors() {
 
 // Same sequence as the original firmware (stop, back up, rotate until clear,
 // settle), plus a timeout on the rotation so it can never spin forever.
+// Physical wheel encoder counts (+ = forward), see ENCODERS_SWAPPED.
+void readWheelTicks(long &left, long &right) {
+  noInterrupts();
+  long a = leftTicks;
+  long b = rightTicks;
+  interrupts();
+  long l = ENCODERS_SWAPPED ? b : a;
+  long r = ENCODERS_SWAPPED ? a : b;
+  l = LEFT_ENCODER_REVERSED ? -l : l;
+  r = RIGHT_ENCODER_REVERSED ? -r : r;
+  left = FRONT_FLIPPED ? -r : l;                     // see FRONT_FLIPPED
+  right = FRONT_FLIPPED ? -l : r;
+}
+
+void resetSpeedControl() {
+  readWheelTicks(lastSpeedTicks[0], lastSpeedTicks[1]);
+  lastSpeedMs = millis();
+  for (int m = 0; m < 2; m++) {
+    measuredTps[m] = 0;
+    speedInteg[m] = 0;
+    speedOut[m] = 0;
+  }
+}
+
+// PI speed loop per wheel, every SPEED_PERIOD_MS: PWM = feed-forward for the target speed
+// + KP * error + KI * integral. A target of 0 brakes (outputMotor) and clears the integral.
+void updateSpeedControl() {
+  unsigned long now = millis();
+  unsigned long dtMs = now - lastSpeedMs;
+  if (dtMs < SPEED_PERIOD_MS) return;
+  float dt = dtMs / 1000.0f;
+  long ticks[2];
+  readWheelTicks(ticks[0], ticks[1]);
+  lastSpeedMs = now;
+  for (int m = 0; m < 2; m++) {
+    float rate = (ticks[m] - lastSpeedTicks[m]) / dt;
+    lastSpeedTicks[m] = ticks[m];
+    measuredTps[m] = 0.5f * measuredTps[m] + 0.5f * rate;
+    int target = targetTps[m];
+    if (target == 0) {
+      speedInteg[m] = 0;
+      speedOut[m] = 0;
+      continue;
+    }
+    float sign = target > 0 ? 1.0f : -1.0f;
+    float err = target - measuredTps[m];
+    speedInteg[m] = constrain(speedInteg[m] + err * dt, -SPEED_I_LIMIT / SPEED_KI,
+                              SPEED_I_LIMIT / SPEED_KI);
+    float pwm = sign * (SPEED_FF_START + SPEED_FF_SLOPE * fabs((float)target))
+                + SPEED_KP * err + SPEED_KI * speedInteg[m];
+    if (pwm * sign < 0) pwm = 0;                       // never push the wrong way
+    if (fabs(measuredTps[m]) < SPEED_KICK_BELOW_TPS && fabs(pwm) < SPEED_KICK_PWM) {
+      pwm = sign * SPEED_KICK_PWM;                     // break static friction
+    }
+    speedOut[m] = constrain((int)lroundf(pwm), -MAX_PWM, MAX_PWM);
+  }
+}
+
 void runAvoidance(int &left, int &right) {
   unsigned long now = millis();
 
@@ -727,48 +893,53 @@ void runAvoidance(int &left, int &right) {
 void applyMotors(int left, int right) {
   left = constrain(left, -MAX_PWM, MAX_PWM);
   right = constrain(right, -MAX_PWM, MAX_PWM);
+  int motorLeft = FRONT_FLIPPED ? -right : left;     // see FRONT_FLIPPED
+  int motorRight = FRONT_FLIPPED ? -left : right;
 
-  outputMotor(0, LEFT_PWM_CHANNEL, LEFT_IN_A, LEFT_IN_B, LEFT_REVERSED ? -left : left);
-  outputMotor(1, RIGHT_PWM_CHANNEL, RIGHT_IN_A, RIGHT_IN_B, RIGHT_REVERSED ? -right : right);
+  outputMotor(0, LEFT_A_CHANNEL, LEFT_B_CHANNEL, LEFT_REVERSED ? -motorLeft : motorLeft);
+  outputMotor(1, RIGHT_A_CHANNEL, RIGHT_B_CHANNEL, RIGHT_REVERSED ? -motorRight : motorRight);
 
   appliedLeft = left;
   appliedRight = right;
 }
 
-// Brake after a stop: a motor that was turning and is told 0 gets both direction inputs high
-// with the enable on for BRAKE_MS (the driver shorts the motor: short brake), then is
-// released. Without it the motors free-wheel and the robot coasts ~25 deg after a spin.
-unsigned long brakeUntilMs[2] = {0, 0};
-int lastMotorPwm[2] = {0, 0};
-
-void outputMotor(int m, int channel, int inA, int inB, int pwm) {
-  unsigned long now = millis();
-  if (pwm == 0 && lastMotorPwm[m] != 0) brakeUntilMs[m] = now + BRAKE_MS;
-  if (pwm != 0) brakeUntilMs[m] = 0;
-  lastMotorPwm[m] = pwm;
-  if (pwm == 0 && brakeUntilMs[m] != 0 && (long)(brakeUntilMs[m] - now) > 0) {
-    digitalWrite(inA, HIGH);
-    digitalWrite(inB, HIGH);
-    ledcWrite(channel, MAX_PWM);
+// A wheel told 0 is braked (PWM mode: IN1 = IN2 = high; PH/EN mode: enable low) for as long as
+// it is told 0, not released to coast. With the DRV8262 the robot turns ~145 deg/s at full
+// PWM, and a 150 ms brake followed by coasting let it turn on another ~60 deg after a stop.
+void outputMotor(int m, int chA, int chB, int pwm) {
+  (void)m;
+  if (pwm == 0) {
+    if (DRIVER_PH_EN) {
+      ledcWrite(chA, 0);                      // enable low = brake
+      ledcWrite(chB, 0);
+    } else {
+      ledcWrite(chA, FULL_DUTY);              // both high = brake
+      ledcWrite(chB, FULL_DUTY);
+    }
     return;
   }
-  brakeUntilMs[m] = 0;
-  setMotor(channel, inA, inB, pwm);
+  setMotor(chA, chB, pwm);
 }
 
-void setMotor(int channel, int inA, int inB, int pwm) {
-  if (pwm > 0) {
-    digitalWrite(inA, HIGH);
-    digitalWrite(inB, LOW);
-    ledcWrite(channel, pwm);
+// Speed is the PWM duty on the IN pins (DRV8262: a steady high on an IN pin is 100 %).
+// PWM mode: the driving input is pulsed and the other held low, so the motor coasts between
+//   pulses, like the L298N's EN-pin PWM the speeds were tuned with.
+// PH/EN mode: IN1 (enable) is pulsed and IN2 holds the direction; the motor brakes between
+//   pulses, and 0 is a brake (this mode cannot coast).
+void setMotor(int chA, int chB, int pwm) {
+  int duty = min(abs(pwm), FULL_DUTY);
+  if (DRIVER_PH_EN) {
+    ledcWrite(chA, duty);
+    ledcWrite(chB, pwm > 0 ? FULL_DUTY : 0);
+  } else if (pwm > 0) {
+    ledcWrite(chB, 0);
+    ledcWrite(chA, duty);
   } else if (pwm < 0) {
-    digitalWrite(inA, LOW);
-    digitalWrite(inB, HIGH);
-    ledcWrite(channel, -pwm);
+    ledcWrite(chA, 0);
+    ledcWrite(chB, duty);
   } else {
-    digitalWrite(inA, LOW);
-    digitalWrite(inB, LOW);
-    ledcWrite(channel, 0);
+    ledcWrite(chA, 0);
+    ledcWrite(chB, 0);
   }
 }
 
@@ -792,14 +963,12 @@ void sendTelemetry() {
       Serial.print(",");
       Serial.println(yawRateDps, 2);
     }
-    noInterrupts();
-    long left = leftTicks;
-    long right = rightTicks;
-    interrupts();
+    long left, right;
+    readWheelTicks(left, right);
     Serial.print("W,");
-    Serial.print(LEFT_ENCODER_REVERSED ? -left : left);
+    Serial.print(left);
     Serial.print(",");
-    Serial.println(RIGHT_ENCODER_REVERSED ? -right : right);
+    Serial.println(right);
   }
 
   if (now - lastStatusMs >= STATUS_MS) {

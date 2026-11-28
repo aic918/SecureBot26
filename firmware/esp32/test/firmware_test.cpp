@@ -81,7 +81,7 @@ static int g_chan_bits[16];
 static double g_chan_freq[16];
 double ledcSetup(int ch, double f, int bits) { g_chan_freq[ch] = f; g_chan_bits[ch] = bits; return f; }
 void ledcAttachPin(int pin, int ch) { g_chan_pin[ch] = pin; }
-void ledcWrite(int ch, int duty) { g_pwm[g_chan_pin[ch]] = duty; }  // recorded by EN pin
+void ledcWrite(int ch, int duty) { g_pwm[g_chan_pin[ch]] = duty; }  // recorded by IN pin
 uint32_t ledcChangeFrequency(int ch, uint32_t f, int bits) { g_chan_freq[ch] = f; g_chan_bits[ch] = bits; return f; }
 SerialClass Serial;
 int SerialClass::available() { return (int)(g_in.size() - g_in_pos); }
@@ -102,18 +102,19 @@ void SerialClass::println(double v, int d) { print(v, d); g_out += "\n"; }
 static int failures = 0;
 #define CHECK(cond) do { if (!(cond)) { printf("  FAIL line %d: %s\n", __LINE__, #cond); failures++; } } while (0)
 
-static int leftPWM() {
-  int v = 0;
-  if (g_pin[LEFT_IN_A] == HIGH && g_pin[LEFT_IN_B] == LOW) v = g_pwm[LEFT_EN];
-  if (g_pin[LEFT_IN_A] == LOW && g_pin[LEFT_IN_B] == HIGH) v = -g_pwm[LEFT_EN];
-  return LEFT_REVERSED ? -v : v;   // report the logical command
+// DRV8262 in PWM mode: the duty on the driving IN pin is the speed, the other pin low.
+// Both high = brake, both low = coast (both read as 0 here).
+static int bridgePWM(int inA, int inB) {
+  if (g_pwm[inA] > 0 && g_pwm[inB] == 0) return g_pwm[inA];
+  if (g_pwm[inB] > 0 && g_pwm[inA] == 0) return -g_pwm[inB];
+  return 0;
 }
-static int rightPWM() {
-  int v = 0;
-  if (g_pin[RIGHT_IN_A] == HIGH && g_pin[RIGHT_IN_B] == LOW) v = g_pwm[RIGHT_EN];
-  if (g_pin[RIGHT_IN_A] == LOW && g_pin[RIGHT_IN_B] == HIGH) v = -g_pwm[RIGHT_EN];
-  return RIGHT_REVERSED ? -v : v;   // report the logical command
-}
+static bool braked(int inA, int inB) { return g_pwm[inA] == FULL_DUTY && g_pwm[inB] == FULL_DUTY; }
+static int motorLeftPWM() { int v = bridgePWM(LEFT_IN_A, LEFT_IN_B); return LEFT_REVERSED ? -v : v; }
+static int motorRightPWM() { int v = bridgePWM(RIGHT_IN_A, RIGHT_IN_B); return RIGHT_REVERSED ? -v : v; }
+// the robot-frame command (undoes FRONT_FLIPPED, see applyMotors)
+static int leftPWM() { return FRONT_FLIPPED ? -motorRightPWM() : motorLeftPWM(); }
+static int rightPWM() { return FRONT_FLIPPED ? -motorLeftPWM() : motorRightPWM(); }
 static void send(const std::string &s) { g_in += s; }
 static void step(int ms) { for (int i = 0; i < ms; i++) { g_ms++; loop(); } }
 // step while resending `cmd` every 100 ms like the Jetson's bridge does
@@ -155,7 +156,7 @@ static void t_output_stage_cap() {
   boot();
   applyMotors(999, -999);                       // bypasses the command parser entirely
   CHECK(leftPWM() == MAX_PWM && rightPWM() == -MAX_PWM);
-  CHECK(g_pwm[LEFT_EN] <= MAX_PWM && g_pwm[RIGHT_EN] <= MAX_PWM);
+  for (int pin : {LEFT_IN_A, LEFT_IN_B, RIGHT_IN_A, RIGHT_IN_B}) CHECK(g_pwm[pin] <= MAX_PWM);
 }
 static void t_watchdog() {
   boot();
@@ -261,60 +262,62 @@ static void t_telemetry() {
 }
 
 static void t_pinout() {
-  int pins[] = {LEFT_EN, LEFT_IN_A, LEFT_IN_B, RIGHT_EN, RIGHT_IN_A, RIGHT_IN_B,
+  int pins[] = {LEFT_IN_A, LEFT_IN_B, RIGHT_IN_A, RIGHT_IN_B,
                 ULTRA_LEFT_TRIG, ULTRA_LEFT_ECHO, ULTRA_RIGHT_TRIG, ULTRA_RIGHT_ECHO,
                 LEFT_ENCODER_BLUE, LEFT_ENCODER_WHITE, RIGHT_ENCODER_BLUE, RIGHT_ENCODER_WHITE,
                 IMU_SDA, IMU_SCL};
   int n = sizeof pins / sizeof pins[0];
   for (int i = 0; i < n; i++) for (int j = i + 1; j < n; j++) CHECK(pins[i] != pins[j]);
-  CHECK(LEFT_EN == 27 && LEFT_IN_A == 32 && LEFT_IN_B == 14);
-  CHECK(RIGHT_EN == 26 && RIGHT_IN_A == 25 && RIGHT_IN_B == 33);
-  // No input/output may sit on a boot-strapping, flash or USB-serial pin.
-  const int forbidden[] = {0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 15};
+  CHECK(RIGHT_IN_A == 32 && RIGHT_IN_B == 26 && LEFT_IN_A == 25 && LEFT_IN_B == 33);
+  // No input/output may sit on a boot-strapping, flash or USB-serial pin, nor on GPIO 14
+  // (it goes high during boot and drove a motor while flashing).
+  const int forbidden[] = {0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15};
   for (int i = 0; i < n; i++) for (int f : forbidden) CHECK(pins[i] != f);
   CHECK(RIGHT_ENCODER_WHITE == 18);
   CHECK(ULTRA_LEFT_TRIG == 23 && ULTRA_LEFT_ECHO == 19 && ULTRA_RIGHT_TRIG == 4 && ULTRA_RIGHT_ECHO == 17);
   boot();
   send("M,120,-70\n"); step(5);                   // left forward 120, right reverse 70
-  CHECK(g_pwm[LEFT_EN] == 120);     // direction pins depend on the polarity flags
-  CHECK(g_pin[LEFT_IN_A] == (LEFT_REVERSED ? LOW : HIGH) && g_pin[LEFT_IN_B] == (LEFT_REVERSED ? HIGH : LOW));
-  CHECK(g_pwm[RIGHT_EN] == 70);     // logical reverse
-  CHECK(g_pin[RIGHT_IN_A] == (RIGHT_REVERSED ? HIGH : LOW) && g_pin[RIGHT_IN_B] == (RIGHT_REVERSED ? LOW : HIGH));
+  CHECK(leftPWM() == 120 && rightPWM() == -70);
 }
 
 static void t_polarity() {
-  // Verified with the senior1typetest sketch: forward = right IN1 (RIGHT_IN_A) high,
-  // left IN3 (LEFT_IN_A) low.
-  CHECK(LEFT_REVERSED && !RIGHT_REVERSED);
+  // Measured on the robot 2026-11-22 (DRV8262, front flipped): forward pulses IN2 (GPIO 26)
+  // on the right H-bridge and IN3 (GPIO 25) on the left one.
+  CHECK(LEFT_REVERSED && !RIGHT_REVERSED && FRONT_FLIPPED && !DRIVER_PH_EN);
   boot();
   send("M,100,100\n"); step(5);                  // both wheels forward
-  CHECK(g_pin[LEFT_IN_A] == LOW && g_pin[LEFT_IN_B] == HIGH && g_pwm[LEFT_EN] == 100);
-  CHECK(g_pin[RIGHT_IN_A] == HIGH && g_pin[RIGHT_IN_B] == LOW && g_pwm[RIGHT_EN] == 100);
+  CHECK(g_pwm[RIGHT_IN_A] == 0 && g_pwm[RIGHT_IN_B] == 100);
+  CHECK(g_pwm[LEFT_IN_A] == 100 && g_pwm[LEFT_IN_B] == 0);
   send("M,-100,-100\n"); step(5);                // both wheels backward
-  CHECK(g_pin[LEFT_IN_A] == HIGH && g_pin[LEFT_IN_B] == LOW);
-  CHECK(g_pin[RIGHT_IN_A] == LOW && g_pin[RIGHT_IN_B] == HIGH);
-  send("stop\n"); step(200);                     // stopped (after the 150 ms brake): both low
-  CHECK(g_pin[LEFT_IN_A] == LOW && g_pin[LEFT_IN_B] == LOW && g_pwm[LEFT_EN] == 0);
-  CHECK(g_pin[RIGHT_IN_A] == LOW && g_pin[RIGHT_IN_B] == LOW && g_pwm[RIGHT_EN] == 0);
+  CHECK(g_pwm[RIGHT_IN_A] == 100 && g_pwm[RIGHT_IN_B] == 0);
+  CHECK(g_pwm[LEFT_IN_A] == 0 && g_pwm[LEFT_IN_B] == 100);
+  send("M,100,0\n"); step(5);                    // robot-left forward = motor on IN1/IN2
+  CHECK(g_pwm[RIGHT_IN_B] == 100 && braked(LEFT_IN_A, LEFT_IN_B));
+  send("stop\n"); step(200);                     // stopped: held braked
+  CHECK(braked(LEFT_IN_A, LEFT_IN_B) && braked(RIGHT_IN_A, RIGHT_IN_B));
 }
 
 static void t_pwm_setup() {
-  // 10-bit duty at 10 kHz on both enable pins, like the senior1typetest sketch.
+  // 10-bit duty at 10 kHz, one LEDC channel per IN pin (the DRV8262 has no enable pins).
   boot();
-  CHECK(g_chan_pin[LEFT_PWM_CHANNEL] == LEFT_EN && g_chan_pin[RIGHT_PWM_CHANNEL] == RIGHT_EN);
-  CHECK(LEFT_PWM_CHANNEL != RIGHT_PWM_CHANNEL);
-  CHECK(g_chan_bits[LEFT_PWM_CHANNEL] == 10 && g_chan_bits[RIGHT_PWM_CHANNEL] == 10);
-  CHECK(g_chan_freq[LEFT_PWM_CHANNEL] == 10000 && g_chan_freq[RIGHT_PWM_CHANNEL] == 10000);
-  CHECK(MAX_PWM <= 1023 && MAX_PWM == 665 && DEFAULT_SPEED_PWM == 660);
+  const int ch[4] = {RIGHT_A_CHANNEL, RIGHT_B_CHANNEL, LEFT_A_CHANNEL, LEFT_B_CHANNEL};
+  const int pin[4] = {RIGHT_IN_A, RIGHT_IN_B, LEFT_IN_A, LEFT_IN_B};
+  for (int i = 0; i < 4; i++) {
+    CHECK(g_chan_pin[ch[i]] == pin[i]);
+    CHECK(g_chan_bits[ch[i]] == 10 && g_chan_freq[ch[i]] == 10000);
+    for (int j = i + 1; j < 4; j++) CHECK(ch[i] != ch[j]);
+  }
+  CHECK(MAX_PWM < FULL_DUTY && MAX_PWM == 800 && DEFAULT_SPEED_PWM == 650);
   send("M,660,660\n"); step(5);
-  CHECK(g_pwm[LEFT_EN] == 660 && g_pwm[RIGHT_EN] == 660);
+  CHECK(leftPWM() == 660 && rightPWM() == 660);
 }
 
 static void t_freq_command() {
   boot();
   send("freq 1000\n"); step(5);
-  CHECK(g_chan_freq[LEFT_PWM_CHANNEL] == 1000 && g_chan_freq[RIGHT_PWM_CHANNEL] == 1000);
-  CHECK(g_chan_bits[LEFT_PWM_CHANNEL] == 10 && pwmFrequencyHz == 1000 && outHas("I,freq 1000"));
+  for (int c : {RIGHT_A_CHANNEL, RIGHT_B_CHANNEL, LEFT_A_CHANNEL, LEFT_B_CHANNEL})
+    CHECK(g_chan_freq[c] == 1000 && g_chan_bits[c] == 10);
+  CHECK(pwmFrequencyHz == 1000 && outHas("I,freq 1000"));
   send("freq 999999\n"); step(5);                 // clamped
   CHECK(pwmFrequencyHz == MAX_PWM_FREQ_HZ);
   send("freq 1\n"); step(5);
@@ -400,19 +403,17 @@ static void t_imu_lost() {
   CHECK(leftPWM() == 100);
 }
 
-static void t_brakes_after_a_stop() {
+static void t_brakes_while_stopped() {
   boot();
+  CHECK(braked(LEFT_IN_A, LEFT_IN_B) && braked(RIGHT_IN_A, RIGHT_IN_B));   // from boot
   send("M,300,-300\n"); step(5);                      // spinning on the spot
   CHECK(leftPWM() == 300 && rightPWM() == -300);
   send("M,0,0\n"); step(5);
-  // short brake: both inputs high, enable on (the helpers read that as 0 = not driving)
-  CHECK(g_pin[LEFT_IN_A] == HIGH && g_pin[LEFT_IN_B] == HIGH && g_pwm[LEFT_EN] > 0);
-  CHECK(g_pin[RIGHT_IN_A] == HIGH && g_pin[RIGHT_IN_B] == HIGH && g_pwm[RIGHT_EN] > 0);
+  CHECK(braked(LEFT_IN_A, LEFT_IN_B) && braked(RIGHT_IN_A, RIGHT_IN_B));
   CHECK(leftPWM() == 0 && rightPWM() == 0);
-  step(200);                                           // then released: free, no current
-  CHECK(g_pin[LEFT_IN_A] == LOW && g_pin[LEFT_IN_B] == LOW && g_pwm[LEFT_EN] == 0);
-  CHECK(g_pin[RIGHT_IN_A] == LOW && g_pin[RIGHT_IN_B] == LOW && g_pwm[RIGHT_EN] == 0);
-  send("M,100,100\n"); step(5);                       // driving again cancels any brake
+  stepHB(1000, "M,0,0");                               // held, not released to coast
+  CHECK(braked(LEFT_IN_A, LEFT_IN_B) && braked(RIGHT_IN_A, RIGHT_IN_B));
+  send("M,100,100\n"); step(5);                       // driving again releases the brake
   CHECK(leftPWM() == 100 && rightPWM() == 100);
 }
 
@@ -425,8 +426,92 @@ static void t_encoders() {
   CHECK(leftTicks == 100 && rightTicks == -40);       // direction comes from the channel order
   turnEncoder(LEFT_ENCODER_BLUE, LEFT_ENCODER_WHITE, -30);
   CHECK(leftTicks == 70);
+  // W reports the robot's wheels: counters swapped, the right one reversed, then the front
+  // flipped (robot left = -(physical right) = -(-(70)), robot right = -(physical left) = 40).
+  long l, r; readWheelTicks(l, r);
+  CHECK(l == 70 && r == 40);
   g_out.clear(); step(60);
-  CHECK(outHas("W,70,-40"));
+  CHECK(outHas("W,70,40"));
+}
+
+// Robot-frame encoder pins: turning these by `steps` moves that robot wheel forward by
+// `steps` ticks (inverse of readWheelTicks for this wiring).
+static void turnRobotWheel(int m, int steps) {
+  // robot left  = -(physical right) ; physical right = -(counter on LEFT_* pins) (swapped, reversed)
+  //   -> robot left forward = LEFT_* counter forward
+  // robot right = -(physical left)  ; physical left  = +(counter on RIGHT_* pins)
+  //   -> robot right forward = RIGHT_* counter backward
+  if (m == 0) turnEncoder(LEFT_ENCODER_BLUE, LEFT_ENCODER_WHITE, steps);
+  else turnEncoder(RIGHT_ENCODER_BLUE, RIGHT_ENCODER_WHITE, -steps);
+}
+static void t_robot_wheel_helper() {          // guards turnRobotWheel against wiring changes
+  boot();
+  turnRobotWheel(0, 25); turnRobotWheel(1, -12);
+  long l, r; readWheelTicks(l, r);
+  CHECK(l == 25 && r == -12);
+}
+
+// V command: a simulated wheel whose speed follows the PWM above a friction threshold.
+static void stepWheels(int ms, const std::string &cmd, float tps_per_pwm[2], float thresh = 230) {
+  float acc[2] = {0, 0};
+  for (int i = 0; i < ms; i++) {
+    if (g_ms % 100 == 0) send(cmd + "\n");
+    g_ms++; loop();
+    int pwm[2] = {leftPWM(), rightPWM()};
+    for (int m = 0; m < 2; m++) {
+      float mag = fabs((float)pwm[m]) - thresh;
+      float tps = mag > 0 ? (pwm[m] > 0 ? 1 : -1) * mag * tps_per_pwm[m] : 0;
+      acc[m] += tps / 1000.0f;
+      int whole = (int)acc[m];
+      if (whole) { turnRobotWheel(m, whole); acc[m] -= whole; }
+    }
+  }
+}
+static void t_speed_command_tracks() {
+  boot();
+  float gain[2] = {1.33f, 0.9f};               // the two motors differ a lot
+  stepWheels(3000, "V,300,300", gain);
+  CHECK(mode == MODE_SPEED);
+  CHECK(fabs(measuredTps[0] - 300) < 30 && fabs(measuredTps[1] - 300) < 30);
+  CHECK(leftPWM() != rightPWM());              // each wheel got its own PWM
+  CHECK(leftPWM() <= MAX_PWM && rightPWM() <= MAX_PWM);
+  stepWheels(3000, "V,-200,200", gain);        // spin in place
+  CHECK(fabs(measuredTps[0] + 200) < 30 && fabs(measuredTps[1] - 200) < 30);
+  stepWheels(200, "V,0,0", gain);
+  CHECK(braked(LEFT_IN_A, LEFT_IN_B) && braked(RIGHT_IN_A, RIGHT_IN_B));
+}
+static void t_speed_command_kick_and_clamp() {
+  boot();
+  send("V,50,0\n"); step(SPEED_PERIOD_MS + 2);  // wheel standing: kicked past static friction
+  CHECK(leftPWM() >= (int)SPEED_KICK_PWM && rightPWM() == 0);
+  send("V,99999,-99999\n"); step(SPEED_PERIOD_MS + 2);
+  CHECK(targetTps[0] == MAX_SPEED_TPS && targetTps[1] == -MAX_SPEED_TPS);
+  CHECK(abs(leftPWM()) <= MAX_PWM && abs(rightPWM()) <= MAX_PWM);
+  send("V,abc\n"); step(5);
+  CHECK(outHas("E,bad command: V,abc"));
+}
+static void t_speed_command_watchdog_and_gate() {
+  boot();
+  send("V,300,300\n"); step(300);              // no heartbeat
+  CHECK(leftPWM() == 0 && rightPWM() == 0 && outHas("E,watchdog"));
+  g_echo_us[ULTRA_LEFT_ECHO] = ECHO_HALF_FT; g_echo_us[ULTRA_RIGHT_ECHO] = ECHO_HALF_FT;
+  stepHB(300, "V,300,300");
+  CHECK(leftPWM() == 0 && rightPWM() == 0);    // net forward into an obstacle: blocked
+  stepHB(300, "V,-300,300");
+  CHECK(leftPWM() < 0 && rightPWM() > 0);      // turning on the spot still allowed
+}
+
+static void t_imu_rejects_bad_calibration() {
+  // a gyro reading 41 deg/s at rest (seen once after waking): never used as the bias
+  g_gyro_z_raw = (int16_t)(41 * 65.5);
+  boot();
+  CHECK(outHas("E,imu calibration rejected (try 1)"));
+  CHECK(outHas("E,imu calibration failed"));
+  CHECK(!imuOk);
+  step(200);
+  CHECK(!outHas("G,"));
+  send("M,100,100\n"); step(5);
+  CHECK(leftPWM() == 100);                     // the robot still drives without the gyro
 }
 
 static void t_encoder_scope() {
@@ -452,7 +537,11 @@ int main(int argc, char **argv) {
     {"telemetry", t_telemetry},
     {"imu_setup", t_imu_setup}, {"imu_yaw_integrates", t_imu_yaw_integrates},
     {"imu_bias_tracks_when_still", t_imu_bias_tracks_when_still}, {"imu_absent", t_imu_absent},
-    {"imu_lost", t_imu_lost}, {"imu_wired_but_silent", t_imu_wired_but_silent}, {"imu_slow_to_wake", t_imu_slow_to_wake}, {"brakes_after_a_stop", t_brakes_after_a_stop}, {"encoders", t_encoders}, {"encoder_scope", t_encoder_scope}};
+    {"imu_lost", t_imu_lost}, {"imu_wired_but_silent", t_imu_wired_but_silent}, {"imu_slow_to_wake", t_imu_slow_to_wake}, {"brakes_while_stopped", t_brakes_while_stopped}, {"encoders", t_encoders}, {"encoder_scope", t_encoder_scope},
+    {"robot_wheel_helper", t_robot_wheel_helper}, {"speed_command_tracks", t_speed_command_tracks},
+    {"speed_command_kick_and_clamp", t_speed_command_kick_and_clamp},
+    {"speed_command_watchdog_and_gate", t_speed_command_watchdog_and_gate},
+    {"imu_rejects_bad_calibration", t_imu_rejects_bad_calibration}};
   if (argc < 2) { for (auto &t : tests) printf("%s\n", t.name); return 0; }
   for (auto &t : tests) if (!strcmp(t.name, argv[1])) { t.fn(); return failures ? 1 : 0; }
   printf("unknown test %s\n", argv[1]); return 2;

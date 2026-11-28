@@ -1,14 +1,26 @@
-# ESP32 firmware (v2.0)
+# ESP32 firmware (v2.1)
 
 `securebot_esp32/securebot_esp32.ino` is the low-level controller (Arduino
-framework): L298N-style motor driver and two HC-SR04 ultrasonics. The original
-v1 firmware is preserved in git history (commit "S0-4").
+framework): TI DRV8262 dual H-bridge motor driver, two HC-SR04 ultrasonics, an MPU-6050 gyro and the two
+wheel encoders. The original v1 firmware is preserved in git history (commit "S0-4").
 
 ## What changed from v1
-- **Motor PWM:** 10-bit duty (0-1023) on LEDC channels at 10 kHz; `freq <Hz>` changes it until
-  reboot (for tuning with `tools/motor_tune.py`). The robot needs ~650 to start from standstill,
-  so 650 is the patrol speed and the ROS bridge's floor and ceiling. **PWM cap** (`MAX_PWM =
-  655`) enforced in one output function; applies to every command.
+- **Motor PWM:** 10-bit duty (0-1023) at 10 kHz, one LEDC channel per IN pin: the DRV8262 has
+  no enable pins, so speed and direction both go on IN1..IN4 (PWM mode, MODE2 floating: the
+  driving pin is pulsed, the other held low). `freq <Hz>` changes it until reboot (for tuning
+  with `tools/motor_tune.py`). A wheel at rest needs ~550 to break free; once rolling, far less.
+  **PWM cap** (`MAX_PWM = 800`) enforced in one output function; applies to every command.
+- **Wheel speed control (`V`):** each wheel is held at a target speed in encoder ticks/s by its
+  own PI loop (every 40 ms) on top of a feed-forward, with a kick to at least 580 while a wheel
+  that should turn is still standing. This balances the two motors (they differ by up to 50 %):
+  straight drives drift ~3 deg instead of ~12. It is what the ROS bridge sends by default
+  (`speed_control:=true`); `M` (raw PWM) still works.
+- **Brake while stopped:** a wheel told 0 is held braked (both IN pins high) for as long as it
+  is told 0, not released to coast. With a short brake and then coasting, the robot turned on
+  another ~60 deg after a spin.
+- **Front flipped (`FRONT_FLIPPED`):** the robot's front is the end with the ultrasonics. The
+  flag swaps the wheels and reverses them for the motors and the encoders alike, so `M`/`V`
+  commands, `W` lines, patrol and the obstacle gate all work in that frame.
 - **Watchdog:** no valid command for 250 ms -> motors stop. The sender must resend (the ROS
   bridge does every 100 ms).
 - **Non-blocking serial** line parser (v1 `readStringUntil` could block up to 1 s). Bad lines are
@@ -20,32 +32,47 @@ v1 firmware is preserved in git history (commit "S0-4").
   twice before it counts, and `M` forward motion is blocked near an obstacle (rotate/reverse allowed).
 - Avoidance sequence unchanged, but the rotation now times out after 4 s instead of spinning forever.
 - No `String` objects (no heap fragmentation); motors are zeroed first thing in `setup()`.
+- **Gyro (v2.1):** the MPU-6050 is sampled at 200 Hz, its bias is measured at boot (after a 1 s
+  warm-up, ~1.2 s, motors stopped; **keep the robot still**) and refined whenever the robot stands
+  still; the yaw goes out as `G` lines. A calibration with a bias over 5 deg/s or a spread over
+  1 deg/s (robot moving) is rejected and retried up to 5 times, then the gyro is switched off
+  (`E,imu calibration failed`) rather than run with a wrong bias, which made the robot spin in place.
+  After 20 failed reads in a row the gyro is switched off (`E,imu stopped answering`).
+- **Wheel encoders:** quadrature counts (both edges of both channels) go out as `W` lines, per
+  robot wheel (`ENCODERS_SWAPPED`, `*_ENCODER_REVERSED` and `FRONT_FLIPPED` applied, + = forward).
+  The ROS side uses 1190 ticks per metre (measured against LiDAR scans).
 
 ## Serial protocol (115200 baud, newline-terminated)
 | Direction | Message | Meaning |
 |---|---|---|
-| to ESP32 | `M,<l>,<r>` | wheel PWM (10-bit duty), -655..655 |
+| to ESP32 | `M,<l>,<r>` | wheel PWM (10-bit duty), -800..800 |
+| to ESP32 | `V,<l>,<r>` | wheel speeds in encoder ticks/s (+ = forward), -1000..1000; 0 brakes |
 | to ESP32 | `stop` `forward` `patrol` `backward` `left` `right` | legacy modes |
-| to ESP32 | `speed <n>` | legacy-mode PWM, clamped 0..655 (default 650) |
+| to ESP32 | `speed <n>` | legacy-mode PWM, clamped 0..800 (default 650) |
 | to ESP32 | `freq <hz>` | motor PWM frequency, 50..25000 Hz, until reboot (not a heartbeat) |
+| to ESP32 | `encscope` | encoder line check: 3 s of min/avg/max mV on GPIO 34, 35, 13 (turn a wheel by hand) |
 | from ESP32 | `U,<left_ft>,<right_ft>` | distances in feet, `-1` = none |
 | from ESP32 | `S,<mode>,<l>,<r>,<avoidState>` | status, 2 Hz |
+| from ESP32 | `G,<yaw_deg>,<yaw_rate_dps>` | gyro yaw since boot (CCW +, -180..180), 20 Hz, only if the IMU answered at boot |
+| from ESP32 | `W,<left_ticks>,<right_ticks>` | encoder counts since boot (+ = that wheel forward), 20 Hz |
 | from ESP32 | `I,<text>` / `E,<text>` | info / safety event |
 
 ## Pins (current wiring)
 | Function | GPIO |
 |---|---|
-| Right motor: EN / IN1 / IN2 (driver channel A) | 26 / 25 / 33 |
-| Left motor: EN / IN3 / IN4 (driver channel B) | 27 / 32 / 14 |
+| Right motor: IN1 / IN2 (H-bridge 1) | 32 / 26 |
+| Left motor: IN3 / IN4 (H-bridge 2) | 25 / 33 |
+| DRV8262 MODE2 (pin 29) | not wired: floating = PWM mode (`DRIVER_PH_EN = false`) |
 | Ultrasonic 1 (left): TRIG / ECHO | 23 / 19 |
 | Ultrasonic 2 (right): TRIG / ECHO | 4 / 17 |
-| Right encoder: blue / white (unused yet) | 13 / 18 |
-| Left encoder: blue / white (unused yet) | 34 / 35 |
+| Right encoder: blue / white | 13 / 18 |
+| Left encoder: blue / white | 34 / 35 |
+| Gyro (MPU-6050, address 0x68 or 0x69): SDA / SCL | 21 / 22 |
 
-Motor polarity, verified with the wheels off the ground using the senior1typetest sketch:
-forward is IN1 high on the right motor and IN3 low on the left one, so `LEFT_REVERSED = true`
-and `RIGHT_REVERSED = false`. If a wheel turns the wrong way for a positive command, flip its
-flag at the top of the sketch instead of rewiring.
+Motor polarity (measured on the robot 2026-11-22): `LEFT_REVERSED = true`,
+`RIGHT_REVERSED = false`, `FRONT_FLIPPED = true`; forward pulses IN2 (GPIO 26) and IN3 (GPIO 25).
+If a wheel turns the wrong way for a positive command, flip its flag at the top of the sketch
+instead of rewiring. If the whole robot drives backwards, flip `FRONT_FLIPPED`.
 
 ### Hardware cautions
 - **Gyro (MPU-6050) bus held after a reset:** a reset in the middle of an I2C transfer can
@@ -57,17 +84,23 @@ flag at the top of the sketch instead of rewiring.
   GPIO 18. A test fails if any pin in this sketch lands on a strapping, flash (6-11) or USB-serial (1, 3) pin.
 - **GPIO 34 and 35 have no internal pull-up.** Open-collector encoder outputs need an external
   pull-up (about 10 k to 3.3 V) on those two lines.
-- **GPIO 14 pulses at boot** on some boards, so the left motor may twitch once at power-up.
+- **GPIO 14 goes high during boot and while flashing**, and drove a motor when IN4 was on it.
+  IN4 moved off it; a test fails if any pin in the sketch is put back on GPIO 14.
 - **HC-SR04 ECHO is a 5 V output.** ESP32 pins are 3.3 V only; use a voltage divider (e.g. 1 k / 2 k)
   on both ECHO lines if you have not already.
 
 ## Tests (run on the Jetson/PC, no hardware)
-`./test/run_tests.sh` compiles the sketch against an Arduino stand-in (`test/shim`) and runs 16
-scenarios: pinout, PWM cap, watchdog, heartbeat, partial/oversized/garbage lines, obstacle gate,
-glitch rejection, full avoidance cycle, avoidance timeout, telemetry format.
+`./test/run_tests.sh` compiles the sketch against an Arduino stand-in (`test/shim`) and runs 33
+scenarios: pinout and polarity, PWM setup and `freq`, PWM cap, watchdog, heartbeat,
+partial/oversized/garbage lines, obstacle gate, glitch rejection, full avoidance cycle,
+avoidance timeout, telemetry format, gyro (setup, yaw, bias, missing, lost, slow to wake,
+bad calibration rejected), braking while stopped, encoders and `encscope`, and the `V` speed
+loop (tracking two unequal simulated motors, kick and clamp, watchdog and obstacle gate).
 This checks the logic only; it does not replace testing on the robot.
 
 ## Flashing
-Arduino IDE: board "ESP32 Dev Module", open the sketch folder, Upload. Close anything else holding
-the serial port first. **First test with the wheels off the ground**: send `M,80,80` and confirm
-the wheels spin, then stop sending and confirm they stop within ~0.5 s.
+This sketch is the source of truth; the PlatformIO project on the Jetson
+(`~/Documents/PlatformIO/Projects/securebot/src/main.ino`) was where it was developed, so copy
+any change made there back here. Arduino IDE: board "ESP32 Dev Module", open the sketch folder, Upload. Close anything else holding
+the serial port first. **First test with the wheels off the ground**: send `M,600,600` and confirm
+the wheels spin forward (towards the ultrasonics; lower values may not start them), then stop sending and confirm they stop within ~0.5 s.
