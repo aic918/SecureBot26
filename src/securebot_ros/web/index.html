@@ -66,6 +66,13 @@
     #menubtn, #drawer, #scrim, #page-title { display: none !important; }
   }
   @media (min-width: 900px) and (max-width: 1100px) { #roompick { max-width: 180px; } }
+  /* phones: the room picker gets its own row so the battery and status pills fit */
+  @media (max-width: 620px) {
+    header { flex-wrap: wrap; row-gap: 8px; gap: 8px; }
+    #roompick { order: 10; flex: 1 1 100%; max-width: none; }
+    #page-title { display: none; }
+    header .pill { padding: 5px 9px; }
+  }
 
   main { padding: 16px; max-width: 1280px; margin: 0 auto; }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
@@ -107,7 +114,7 @@
   .stage img { object-fit: contain; background: #000; }
   .stage .empty { position: absolute; inset: 0; display: grid; place-items: center;
                   color: var(--muted); text-align: center; padding: 20px; }
-  .bat { position: absolute; top: 10px; right: 10px; z-index: 2; cursor: pointer; }
+  .bat { cursor: pointer; }
   .bat svg { width: 18px; height: 18px; stroke: var(--muted); }
   .bat.ok { border-color: rgba(47, 183, 107, .5); } .bat.ok svg { stroke: var(--go); }
   .bat.mid { border-color: rgba(245, 165, 36, .5); } .bat.mid svg { stroke: var(--warn); }
@@ -312,6 +319,7 @@
   </nav>
   <span class="grow"></span>
   <select id="roompick" title="Room on the main screen" aria-label="Room"></select>
+  <span class="pill bat" id="bat" role="button" tabindex="0" title="Battery: click to set the return-home level"><svg><use href="#i-bat"/></svg><span>—%</span></span>
   <span class="pill" id="pill"><i></i><span>Connecting…</span></span>
 </header>
 
@@ -357,6 +365,7 @@
         <div><span>ESP32</span><span id="s-esp">—</span></div>
         <div><span>Faces</span><span id="s-faces">—</span></div>
         <div><span>Tamper</span><span id="s-tamper">—</span></div>
+        <div><span>Battery</span><span id="s-bat">—</span></div>
       </div>
       <div class="note" id="s-note"></div>
       <hr>
@@ -369,7 +378,6 @@
           <canvas id="maincanvas"></canvas>
           <img id="camimg" alt="Robot camera" hidden>
           <div class="empty" id="mainempty" hidden></div>
-          <span class="pill bat" id="bat" role="button" tabindex="0" title="Battery: click to set the return-home level"><svg><use href="#i-bat"/></svg><span>—%</span></span>
           <span class="pill over-l" id="mode-pill" hidden></span>
         </div>
         <div class="viewbar">
@@ -1141,6 +1149,9 @@ function renderBattery() {
      'Battery shows while the robot software is on (click to set the return-home level)') :
     `${b.volts.toFixed(2)} V, ${b.amps.toFixed(2)} A · returns home at ${b.return_home_pct}%` +
     (b.low ? ' · LOW: going home' : '') + ' (click to change)';
+  $('s-bat').textContent = pct == null ? (b ? 'no reading' : 'robot software off') :
+    `${pct}% · ${b.volts.toFixed(2)} V · ${b.amps.toFixed(2)} A` + (b.low ? ' · LOW' : '');
+  $('s-bat').style.color = b && b.low ? 'var(--stop)' : '';
 }
 async function batteryDialog() {
   let cur;
@@ -1156,8 +1167,8 @@ async function batteryDialog() {
   if (r.value === 'pack') {
     const cells = await ask({title: 'Battery pack',
       text: 'Which lithium-ion pack is in the robot? A full charge reads about 25.2 V on a 6S pack and 29.4 V on a 7S pack.',
-      buttons: [{label: 'Cancel', value: null}, {label: '7S (29.4 V full)', value: 7},
-                {label: '6S (25.2 V full)', cls: 'accent', value: 6}]});
+      buttons: [{label: 'Cancel', value: null}, {label: '6S (25.2 V full)', value: 6},
+                {label: '7S (29.4 V full)', cls: 'accent', value: 7}]});
     if (cells) await act('/api/power/settings', {cells});
     return;
   }

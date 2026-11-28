@@ -98,13 +98,15 @@ const bool RIGHT_ENCODER_REVERSED = true;
 const int IMU_SDA = 21;
 const int IMU_SCL = 22;
 
-// Battery monitor: INA226 on the same I2C bus (SDA 21 / SCL 22), A0 = A1 = GND -> 0x40, its
-// IN+ to the battery + and IN- to the robot's supply (high side). The 24 V pack can read up
+// Battery monitor: INA226 on the same I2C bus (SDA 21 / SCL 22), its IN+ to the battery +
+// and IN- to the robot's supply (high side), VBS (VBUS) to IN+. Its address (0x40..0x4F, set
+// by A0 / A1; 0x40 on boards without A0 / A1 pads) is found at boot. The 24 V pack can read up
 // to ~29.4 V, over the INA219's 26 V limit: use the INA226 (36 V).
 // SHUNT_OHMS must match the shunt resistor on the module: "R100" = 0.1 ohm (most INA226
 // boards; only up to ~0.8 A, too little for the motors), "R010" = 0.01 ohm (up to ~8 A).
-const uint8_t INA226_ADDR = 0x40;
-const float SHUNT_OHMS = 0.01;
+const uint8_t INA226_FIRST_ADDR = 0x40;   // the INA226's 16 possible addresses
+const uint8_t INA226_LAST_ADDR = 0x4F;
+const float SHUNT_OHMS = 0.1;      // the robot's module: R100 (measured 2026-11-28)
 
 // ==================== SETTINGS ====================
 // Motor PWM: 10-bit duty (0-1023) at 10 kHz. Chosen with tools/motor_tune.py on the floor
@@ -229,6 +231,7 @@ unsigned long motorsStillSinceMs = 0;
 
 bool wireStarted = false;          // I2C bus up (the IMU's wires are there)
 bool powerOk = false;              // INA226 answered at boot
+uint8_t inaAddr = 0x40;            // where it answered
 unsigned long lastPowerMs = 0;
 
 bool accelOk = false;              // accelerometer works and "down" is known
@@ -1162,7 +1165,7 @@ void sendTamper() {
 
 // ==================== BATTERY (INA226) ====================
 bool inaWrite(uint8_t reg, uint16_t value) {
-  Wire.beginTransmission(INA226_ADDR);
+  Wire.beginTransmission(inaAddr);
   Wire.write(reg);
   Wire.write((uint8_t)(value >> 8));
   Wire.write((uint8_t)(value & 0xFF));
@@ -1170,10 +1173,10 @@ bool inaWrite(uint8_t reg, uint16_t value) {
 }
 
 bool inaRead(uint8_t reg, uint16_t &value) {
-  Wire.beginTransmission(INA226_ADDR);
+  Wire.beginTransmission(inaAddr);
   Wire.write(reg);
   if (Wire.endTransmission(false) != 0) return false;
-  if (Wire.requestFrom((int)INA226_ADDR, 2) != 2) return false;
+  if (Wire.requestFrom((int)inaAddr, 2) != 2) return false;
   int hi = Wire.read();
   int lo = Wire.read();
   value = (uint16_t)((hi << 8) | lo);
@@ -1193,9 +1196,15 @@ void setupPowerMonitor() {
     Wire.setTimeOut(10);
     wireStarted = true;
   }
-  uint16_t id = 0;
-  if (!inaRead(0xFE, id) || id != 0x5449) {  // manufacturer ID "TI"
-    Serial.println("E,power monitor not found (INA226 at 0x40): battery level unknown");
+  bool found = false;
+  for (uint8_t a = INA226_FIRST_ADDR; a <= INA226_LAST_ADDR && !found; a++) {
+    inaAddr = a;
+    uint16_t id = 0, die = 0;
+    // manufacturer ID "TI" and the INA226's die ID (an INA219 / INA260 there is not used)
+    found = inaRead(0xFE, id) && id == 0x5449 && inaRead(0xFF, die) && (die >> 4) == 0x226;
+  }
+  if (!found) {
+    Serial.println("E,power monitor not found (INA226 at 0x40-0x4F): battery level unknown");
     return;
   }
   // CONFIG: average 16 samples, 1.1 ms bus and shunt conversions, continuous: a new value
@@ -1205,7 +1214,10 @@ void setupPowerMonitor() {
     return;
   }
   powerOk = true;
-  Serial.println("I,power monitor ready (INA226)");
+  char addr[24];
+  snprintf(addr, sizeof addr, "INA226 at 0x%02X)", inaAddr);
+  Serial.print("I,power monitor ready (");
+  Serial.println(addr);
 }
 
 void sendPower() {

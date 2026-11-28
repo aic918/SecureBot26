@@ -46,7 +46,7 @@ def test_settings_defaults_validation_and_round_trip(tmp_path):
     assert pl.load_settings(path) == pl.DEFAULTS
 
 
-def volts_for(pct, cells=6):
+def volts_for(pct, cells=pl.DEFAULTS["cells"]):
     """Resting pack voltage at about `pct` (inverse of the curve, by search)."""
     lo, hi = 3.0 * cells, 4.25 * cells
     for _ in range(60):
@@ -103,6 +103,13 @@ def test_no_reading_means_unknown():
     assert m.status(1.0)['pct'] is not None
     s = m.status(1.0 + pl.STALE_S + 1)
     assert s['pct'] is None and not s['low'] and s['return_home_pct'] == 20
+
+
+def test_impossible_voltage_is_no_reading():
+    m = pl.BatteryMonitor()
+    for i in range(60):                      # 30 s of 0 V (VBS not wired)
+        assert m.update(i * 0.5, 0.0, 6.0) is None
+    assert m.status(30.0)['pct'] is None and not m.low
 
 
 def test_parse_tamper():

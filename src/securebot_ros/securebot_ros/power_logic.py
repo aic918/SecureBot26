@@ -1,8 +1,9 @@
 """SecureBot power monitor and tamper logic (no ROS here, so it can be tested on its own).
 
-Battery: a 24 V 3.2 Ah lithium-ion pack (6S by default, 25.2 V full; 7S packs are also sold as
-"24 V", 29.4 V full) measured by an INA226 on the ESP32's I2C bus. The firmware sends the pack
-voltage and current (`B,<mV>,<mA>`); BatteryMonitor turns them into a percentage:
+Battery: a 24 V 3.2 Ah lithium-ion pack (the robot's is 7S, 29.4 V full, the default; 6S
+packs, 25.2 V full, are also sold as "24 V") measured by an INA226 on the ESP32's I2C bus.
+The firmware sends the pack voltage and current (`B,<mV>,<mA>`); BatteryMonitor turns them
+into a percentage:
 
   * load compensation: under load the voltage sags by current x pack resistance, so
     V_rest = V + I * R before looking the voltage up (otherwise driving reads ~10 % lower
@@ -20,7 +21,7 @@ import json
 import os
 
 SETTINGS_FILE = os.path.expanduser('~/securebot_ws/config/power.json')
-DEFAULTS = {'return_home_pct': 20, 'cells': 6, 'pack_ohms': 0.25}
+DEFAULTS = {'return_home_pct': 20, 'cells': 7, 'pack_ohms': 0.25}   # robot's pack: 7S
 MIN_RETURN_PCT, MAX_RETURN_PCT = 5, 80
 CELL_CHOICES = (6, 7)
 
@@ -28,6 +29,7 @@ SMOOTH_S = 20.0          # s: time constant of the percentage smoothing
 LOW_HOLD_S = 10.0        # s at or under the level before it counts as low
 REARM_MARGIN = 5.0       # % above the level before "low" clears
 STALE_S = 5.0            # s without a reading: battery unknown
+MIN_CELL_V = 2.0         # V per cell: anything lower is not a battery reading (sensor/wiring)
 
 # resting voltage of one lithium-ion (NMC) cell -> % charge
 CELL_CURVE = [(3.27, 0), (3.61, 5), (3.69, 10), (3.71, 15), (3.73, 20), (3.75, 25),
@@ -108,8 +110,11 @@ class BatteryMonitor:
 
     def update(self, t, volts, amps):
         """A reading at time t (s). Returns 'low' the moment the battery becomes low, else
-        None."""
+        None. A voltage no pack can have (VBS not wired, no battery) is ignored, so the battery
+        shows as unknown instead of 0 % and nobody is sent home on a wiring fault."""
         s = self.settings
+        if volts < MIN_CELL_V * s['cells']:
+            return None
         raw = pack_percent(volts, amps, s['cells'], s['pack_ohms'])
         if self.pct is None or self.last_t is None or t - self.last_t > STALE_S:
             self.pct = raw

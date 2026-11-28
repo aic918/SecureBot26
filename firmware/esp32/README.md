@@ -82,7 +82,7 @@ accelerometer, an INA226 battery monitor and the two wheel encoders. The origina
 | Right encoder: blue / white | 13 / 18 |
 | Left encoder: blue / white | 34 / 35 |
 | Gyro (MPU-6050, address 0x68 or 0x69): SDA / SCL | 21 / 22 |
-| Battery monitor (INA226, address 0x40: A0 and A1 to GND): SDA / SCL | 21 / 22 (shared with the gyro), VCC 3.3 V |
+| Battery monitor (INA226, any address 0x40-0x4F, found at boot): SDA / SCL | 21 / 22 (shared with the gyro), VCC 3.3 V |
 
 Motor polarity (measured on the robot 2026-11-22): `LEFT_REVERSED = true`,
 `RIGHT_REVERSED = false`, `FRONT_FLIPPED = true`; forward pulses IN2 (GPIO 26) and IN3 (GPIO 25).
@@ -101,11 +101,15 @@ instead of rewiring. If the whole robot drives backwards, flip `FRONT_FLIPPED`.
   pull-up (about 10 k to 3.3 V) on those two lines.
 - **GPIO 14 goes high during boot and while flashing**, and drove a motor when IN4 was on it.
   IN4 moved off it; a test fails if any pin in the sketch is put back on GPIO 14.
-- **INA226 wiring:** high side, battery + to IN+ and IN- to the robot's supply; GND shared
-  with the ESP32; VCC from the ESP32's 3.3 V (its SDA / SCL pull-ups then stay at 3.3 V).
-  Check the shunt resistor printed on the module: most boards have `R100` (0.1 ohm, only
-  ~0.8 A before the reading saturates, too little for the motors). Use an `R010` (0.01 ohm,
-  ~8 A) module or shunt and keep `SHUNT_OHMS = 0.01`; with `R100` set `SHUNT_OHMS = 0.1`.
+- **INA226 wiring** (board pins IN+, IN-, VBS, ALE, SCL, SDA, GND, VCC): high side, battery +
+  to IN+ and IN- to the robot's supply; VBS (the voltage input) to IN+, or the voltage reads 0;
+  ALE not connected; GND shared with the ESP32; VCC from the ESP32's 3.3 V (its SDA / SCL
+  pull-ups then stay at 3.3 V). The address is found at boot (`INA226 at 0x..` in the log).
+  `SHUNT_OHMS` must match the shunt resistor printed on the module. The robot's module has
+  `R100` (0.1 ohm, `SHUNT_OHMS = 0.1`): the current reads up to ~0.82 A and stays there above
+  that (the motors draw more), which only affects the load compensation of the battery %; the
+  voltage is unaffected. For the full current use an `R010` (0.01 ohm, ~8 A) shunt and set
+  `SHUNT_OHMS = 0.01`.
   Do not use an INA219: its 26 V limit is below a full 7S pack (29.4 V).
 - **HC-SR04 ECHO is a 5 V output.** ESP32 pins are 3.3 V only; use a voltage divider (e.g. 1 k / 2 k)
   on both ECHO lines if you have not already.

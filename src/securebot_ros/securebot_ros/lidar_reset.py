@@ -10,7 +10,7 @@ securebot_lidar.launch.py before the driver; harmless if the LiDAR was already i
 import sys
 import time
 
-DEFAULT_PORT = '/dev/serial/by-path/platform-3610000.usb-usb-0:2.2:1.0-port0'
+DEFAULT_PORT = '/dev/serial/by-path/platform-3610000.usb-usb-0:2.3:1.0-port0'
 STOP, RESET = b'\xa5\x25', b'\xa5\x40'
 
 

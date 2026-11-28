@@ -63,7 +63,7 @@ RUNS_DIR = os.path.join(LOG_DIR, 'laps_runs')
 KEEP_LOGS = 10                # newest runs / log files / build logs kept in log/ (prune_logs)
 TOOLS_DIR = os.path.join(WS, 'tools')
 SERIAL_DIR = '/dev/serial/by-path'
-LIDAR_PORT = '/dev/serial/by-path/platform-3610000.usb-usb-0:2.2:1.0-port0'
+LIDAR_PORT = '/dev/serial/by-path/platform-3610000.usb-usb-0:2.3:1.0-port0'
 
 COMMANDS = ('start', 'stop', 'home')
 MAX_NOPASS = 500              # lines per room (a sanity limit for what the page sends)

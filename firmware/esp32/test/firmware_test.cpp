@@ -21,6 +21,8 @@ static int16_t g_gyro_z_raw = 0;
 static int16_t g_accel_raw[3] = {0, 0, 16384};   // standing: 1 g along the board's Z
 static bool g_ina_present = false;                // INA226 battery monitor at 0x40
 static uint16_t g_ina_bus = 0, g_ina_shunt = 0, g_ina_config = 0;
+static uint8_t g_ina_addr = 0x40;                  // fixed by the board's A0 / A1
+static uint16_t g_ina_die = 0x2260;                // INA226 die ID (an INA260 reads 0x2270)
 static uint8_t g_tx_addr = 0;
 static uint8_t g_imu_reg[128];
 static int g_wire_sda = -1, g_wire_scl = -1;
@@ -37,18 +39,18 @@ void TwoWire::beginTransmission(uint8_t addr) {
   g_tx_len = 0;
   if (g_wake_after_writes > 0 && --g_wake_after_writes == 0) g_imu_present = true;
   g_tx_addr = addr;
-  g_tx_ok = (g_imu_present && addr == 0x68) || (g_ina_present && addr == 0x40);
+  g_tx_ok = (g_imu_present && addr == 0x68) || (g_ina_present && addr == g_ina_addr);
 }
 size_t TwoWire::write(uint8_t b) { if (g_tx_len < 8) g_tx[g_tx_len++] = b; return 1; }
 uint8_t TwoWire::endTransmission(bool) {
   if (!g_tx_ok) return 2;                                  // NACK on address
   if (g_tx_addr == 0x68 && g_tx_len == 2) g_imu_reg[g_tx[0] & 127] = g_tx[1];   // register write
-  if (g_tx_addr == 0x40 && g_tx_len == 3 && g_tx[0] == 0x00) g_ina_config = (g_tx[1] << 8) | g_tx[2];
+  if (g_tx_addr == g_ina_addr && g_tx_len == 3 && g_tx[0] == 0x00) g_ina_config = (g_tx[1] << 8) | g_tx[2];
   return 0;
 }
 uint8_t TwoWire::requestFrom(int addr, int n) {
-  if (addr == 0x40 && g_ina_present && g_tx_len >= 1 && n == 2) {
-    uint16_t v = g_tx[0] == 0xFE ? 0x5449 : g_tx[0] == 0x02 ? g_ina_bus : g_tx[0] == 0x01 ? g_ina_shunt : 0;
+  if (addr == g_ina_addr && g_ina_present && g_tx_len >= 1 && n == 2) {
+    uint16_t v = g_tx[0] == 0xFE ? 0x5449 : g_tx[0] == 0xFF ? g_ina_die : g_tx[0] == 0x02 ? g_ina_bus : g_tx[0] == 0x01 ? g_ina_shunt : 0;
     g_rx[0] = v >> 8; g_rx[1] = v & 0xFF; g_rx_len = 2; g_rx_pos = 0; return 2;
   }
   if (!g_imu_present || addr != 0x68) return 0;
@@ -608,20 +610,32 @@ static void t_tamper_commands_not_heartbeat() {
 static void t_power_monitor() {
   g_ina_present = true;
   g_ina_bus = 20160;                             // x 1.25 mV = 25.2 V
-  g_ina_shunt = 6000;                            // x 2.5 uV = 15 mV over 0.01 ohm = 1.5 A
+  g_ina_shunt = 6000;                            // x 2.5 uV = 15 mV over 0.1 ohm = 150 mA
   boot();
-  CHECK(outHas("I,power monitor ready") && g_ina_config == 0x4527 && powerOk);
+  CHECK(outHas("I,power monitor ready (INA226 at 0x40)") && g_ina_config == 0x4527 && powerOk);
   step(POWER_PERIOD_MS + 1);
-  CHECK(outHas("B,25200,1500"));
+  CHECK(outHas("B,25200,150"));
   g_ina_shunt = (uint16_t)(int16_t)-400;        // charging: current flows back in
   step(POWER_PERIOD_MS + 1);
-  CHECK(outHas("B,25200,-100"));
+  CHECK(outHas("B,25200,-10"));
 }
 static void t_power_monitor_absent() {
   boot();
-  CHECK(outHas("E,power monitor not found (INA226 at 0x40)") && !powerOk);
+  CHECK(outHas("E,power monitor not found (INA226 at 0x40-0x4F)") && !powerOk);
   step(2000);
   CHECK(!outHas("B,"));
+}
+static void t_power_monitor_other_address() {
+  g_ina_present = true; g_ina_addr = 0x45; g_ina_bus = 20000;
+  boot();
+  CHECK(powerOk && inaAddr == 0x45 && outHas("I,power monitor ready (INA226 at 0x45)"));
+  step(POWER_PERIOD_MS + 1);
+  CHECK(outHas("B,25000,0"));
+}
+static void t_power_monitor_not_an_ina226() {
+  g_ina_present = true; g_ina_die = 0x2270;          // an INA260: different registers
+  boot();
+  CHECK(!powerOk && outHas("E,power monitor not found"));
 }
 static void t_power_monitor_without_imu() {
   g_imu_present = false; g_ina_present = true; g_ina_bus = 19200;
@@ -655,7 +669,9 @@ int main(int argc, char **argv) {
     {"tamper_unavailable_without_imu", t_tamper_unavailable_without_imu},
     {"tamper_commands_not_heartbeat", t_tamper_commands_not_heartbeat},
     {"power_monitor", t_power_monitor}, {"power_monitor_absent", t_power_monitor_absent},
-    {"power_monitor_without_imu", t_power_monitor_without_imu}};
+    {"power_monitor_without_imu", t_power_monitor_without_imu},
+    {"power_monitor_other_address", t_power_monitor_other_address},
+    {"power_monitor_not_an_ina226", t_power_monitor_not_an_ina226}};
   if (argc < 2) { for (auto &t : tests) printf("%s\n", t.name); return 0; }
   for (auto &t : tests) if (!strcmp(t.name, argv[1])) { t.fn(); return failures ? 1 : 0; }
   printf("unknown test %s\n", argv[1]); return 2;

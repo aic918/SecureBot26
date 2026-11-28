@@ -18,7 +18,7 @@ from securebot_ros.web_alerts import AlertStore
 from securebot_ros.web_faces import FaceEnroller
 
 LIDAR = wl.LIDAR_PORT
-ESP = '/dev/serial/by-path/platform-3610000.usb-usb-0:2.3:1.0-port0'
+ESP = '/dev/serial/by-path/platform-3610000.usb-usb-0:2.4:1.0-port0'
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -181,7 +181,7 @@ def test_map_is_sent_as_png_with_its_placement(maps):
 # ------------------------------------------------------------------------------ hardware
 def test_esp32_is_the_port_that_is_not_the_lidar():
     assert wl.esp32_port([LIDAR, ESP]) == ESP
-    assert wl.esp32_port([ESP.replace('2.3', '2.4'), LIDAR]) == ESP.replace('2.3', '2.4')
+    assert wl.esp32_port([ESP.replace('2.4', '2.5'), LIDAR]) == ESP.replace('2.4', '2.5')
     assert wl.esp32_port([LIDAR]) is None                 # ESP32 unplugged
     assert wl.esp32_port([LIDAR, ESP, ESP + 'x']) is None  # can't tell which
 
@@ -974,7 +974,7 @@ def test_low_battery_refuses_start_but_not_home(tmp_path, maps):
 def test_power_settings_saved_and_checked(tmp_path, maps):
     app, _ = app_for(tmp_path, maps, FakeOS())
     assert app.power_settings()['return_home_pct'] == 20
-    assert app.set_power_settings({'return_home_pct': 30}) == 'Returns home at 30 % (6S pack)'
+    assert app.set_power_settings({'return_home_pct': 30}) == 'Returns home at 30 % (7S pack)'
     assert json.load(open(tmp_path / 'config' / 'power.json'))['return_home_pct'] == 30
     with pytest.raises(ValueError):
         app.set_power_settings({'return_home_pct': 95})

@@ -4,7 +4,7 @@
   ros2 launch securebot_ros securebot_lidar.launch.py rviz:=true
   ros2 launch securebot_ros securebot_lidar.launch.py serial_port:=/dev/ttyUSB0
 
-The default port is the USB *path* of the LiDAR's socket (2.2), which stays the same across
+The default port is the USB *path* of the LiDAR's socket (2.3), which stays the same across
 reboots as long as it is plugged into the same socket; /dev/ttyUSBn numbers can swap with
 the ESP32 (both are CP2102 adapters with the same serial number).
 
@@ -27,7 +27,7 @@ from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
-LIDAR_PORT = '/dev/serial/by-path/platform-3610000.usb-usb-0:2.2:1.0-port0'
+LIDAR_PORT = '/dev/serial/by-path/platform-3610000.usb-usb-0:2.3:1.0-port0'
 
 
 def mount_yaw(share):
