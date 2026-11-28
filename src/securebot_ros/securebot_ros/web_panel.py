@@ -56,6 +56,8 @@ class RosBridge(Node):
         self.click_pub = self.create_publisher(PointStamped, '/clicked_point', 10)
         self.tamper_pub = self.create_publisher(String, '/tamper/command', 10)
         self.tamper_hook = None           # fn(state, reason) per /tamper message (PanelApp)
+        self.power_hook = None            # fn(status dict) per /power/status message
+        self.face_hook = None             # fn(status, names) per /face_status message
         self.create_subscription(String, '/power/status', self.on_power, 10)
         self.create_subscription(String, '/tamper', self.on_tamper, 10)
         self.create_subscription(String, '/face_status', lambda m: self.on_face('status', m), 10)
@@ -124,6 +126,8 @@ class RosBridge(Node):
             return
         with self.lock:
             self.power_status = (status, time.monotonic())
+        if self.power_hook and isinstance(status, dict):
+            self.power_hook(status)
 
     def on_tamper(self, msg):
         parsed = pl.parse_tamper(msg.data)
@@ -137,6 +141,9 @@ class RosBridge(Node):
     def on_face(self, which, msg):
         with self.lock:
             self.face[which] = (msg.data, time.monotonic())
+            names = self.face.get('names', ('', 0))[0]
+        if which == 'status' and self.face_hook:
+            self.face_hook(msg.data, names)
 
     def power(self):
         with self.lock:
@@ -236,6 +243,8 @@ def main(args=None):
     bridge = RosBridge()
     app = wl.PanelApp(bridge)
     bridge.tamper_hook = app.tamper_event
+    bridge.power_hook = app.power_event
+    bridge.face_hook = app.face_event
     server = wl.make_server(app, opts.host, opts.port, static_dir())
     threading.Thread(target=server.serve_forever, daemon=True).start()
     log = bridge.get_logger()

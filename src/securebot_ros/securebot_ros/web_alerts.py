@@ -1,4 +1,5 @@
-"""SecureBot web panel, alerts: tamper events with their time and a webcam snapshot.
+"""SecureBot web panel, alerts: tampering, unauthorized faces and a low battery, each with its time
+and (when the camera gave one) a webcam snapshot.
 
 Each alert is two files in ALERTS_DIR: <id>.json (time, kind, reason, text, acknowledged) and,
 when the camera gave a picture, <id>.jpg. The newest KEEP alerts are kept.

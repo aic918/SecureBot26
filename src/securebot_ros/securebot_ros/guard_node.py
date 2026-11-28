@@ -6,13 +6,14 @@ Inputs
   /tamper         std_msgs/String           off | armed | tripped,<reason> | unavailable
   /laps/status, /explore/status  std_msgs/String (JSON)  whether the robot is out on its job
 Outputs
-  /power/status   std_msgs/String (JSON)    pct, volts, amps, low, return_home_pct, cells
+  /power/status   std_msgs/String (JSON)    pct, volts, amps, rest_volts, held, low,
+                                            return_home_volts, full_volts, cells
   /battery        sensor_msgs/BatteryState  the same as a standard message
   /laps/command, /explore/command  'home' while the battery is low and the robot is on its
                   job; 'stop' when it is tampered with (the ESP32 has already stopped the
                   motors itself and ignores driving until the alert is acknowledged)
 
-Settings (return-home %, 6 or 7 cells, pack resistance): ~/securebot_ws/config/power.json,
+Settings (return-home voltage, full voltage, cells, ...): ~/securebot_ws/config/power.json,
 written by the web panel and re-read here when it changes. Logic: power_logic.py.
 """
 import json
@@ -51,8 +52,8 @@ class GuardNode(Node):
                                      lambda m, k=kind: self.on_status(k, m), 10)
         self.create_timer(1.0, self.tick)
         self.get_logger().info(
-            f'Guard up: return home at {self.battery.settings["return_home_pct"]} % '
-            f'({self.battery.settings["cells"]}S pack), stop when tampered with')
+            f'Guard up: return home at {self.battery.settings["return_home_volts"]:.2f} V '
+            f'(full {self.battery.settings["full_volts"]:.2f} V), stop when tampered with')
 
     def reload_settings(self):
         try:
@@ -66,13 +67,14 @@ class GuardNode(Node):
         if new != self.battery.settings:
             self.battery.settings = new
             self.battery.low, self.battery.under_since = False, None    # judge again
-            self.get_logger().info(f'Power settings: return home at {new["return_home_pct"]} '
-                                   f'%, {new["cells"]}S pack')
+            self.get_logger().info(f'Power settings: return home at '
+                                   f'{new["return_home_volts"]:.2f} V, full '
+                                   f'{new["full_volts"]:.2f} V')
 
     def on_battery(self, msg):
         if self.battery.update(time.monotonic(), float(msg.voltage), float(msg.current)):
-            self.get_logger().warn(f'Battery low ({self.battery.pct:.0f} %, '
-                                   f'{msg.voltage:.2f} V): returning home')
+            self.get_logger().warn(f'Battery low ({self.battery.rest:.2f} V at rest, '
+                                   f'{self.battery.pct:.0f} %): returning home')
             self.act()
 
     def on_tamper(self, msg):

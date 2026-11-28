@@ -582,6 +582,22 @@ def test_prune_runs_keeps_the_newest_runs_with_all_their_files(tmp_path):
     assert len(os.listdir(runs)) == 30                       # 10 runs x 3 files
 
 
+def test_a_start_keeps_only_the_newest_30_of_each_log(tmp_path):
+    log = tmp_path / 'log'
+    for i in range(40):
+        _touch(str(log / 'laps_runs' / f'run_old{i:02d}.log'), 1000 + i)
+        _touch(str(log / 'explore_runs' / f'explore_{i:02d}.log'), 1000 + i)
+    fos = FakeOS()
+    (tmp_path / 'tools').mkdir()
+    st = wl.StackManager(str(log / 'laps_runs'), str(tmp_path / 'tools'), popen=fos.popen,
+                         killpg=fos.killpg, clock=fos.clock, sleep=fos.sleep)
+    st.start("Kumar's Lab", '/m/lab.yaml', ESP, name='new')
+    runs = wl.list_runs(str(log / 'laps_runs'), limit=None)
+    assert wl.KEEP_LOGS == 30 and len(runs) == 30 and runs[0]['name'] == 'new'
+    assert sorted(os.listdir(log / 'explore_runs'))[0] == 'explore_10.log'
+    assert len(os.listdir(log / 'explore_runs')) == 30
+
+
 def test_prune_logs_trims_explore_logs_and_colcon_folders_but_not_latest(tmp_path):
     log = tmp_path / 'log'
     for i in range(13):
@@ -602,7 +618,7 @@ def test_prune_logs_trims_explore_logs_and_colcon_folders_but_not_latest(tmp_pat
 
 def test_starting_a_run_prunes_old_runs_but_keeps_the_new_one(tmp_path):
     runs = tmp_path / 'laps_runs'
-    for i in range(12):
+    for i in range(wl.KEEP_LOGS + 2):
         _touch(str(runs / f'run_old{i:02d}.log'), 1000 + i)
 
     class P:
@@ -614,7 +630,7 @@ def test_starting_a_run_prunes_old_runs_but_keeps_the_new_one(tmp_path):
     sm = wl.StackManager(runs_dir=str(runs), tools_dir=str(tmp_path), popen=P, record=False)
     sm.start('Lab', '/x.yaml', '/dev/null', name='new')
     names = [r['name'] for r in wl.list_runs(str(runs), limit=None)]
-    assert len(names) == 10 and names[0] == 'new'
+    assert len(names) == wl.KEEP_LOGS == 30 and names[0] == 'new'
     sm.log_file.close()
 
 
@@ -959,28 +975,78 @@ def test_ack_one_alert_by_id(tmp_path, maps):
 def test_low_battery_refuses_start_but_not_home(tmp_path, maps):
     fos = FakeOS()
     app, bridge = app_for(tmp_path, maps, fos)
-    bridge.power_status = {'pct': 17.6, 'volts': 22.1, 'amps': 0.8, 'low': True,
-                           'return_home_pct': 20, 'cells': 6}
-    with pytest.raises(RuntimeError, match=r'Battery low \(18 %, returns home at 20 %\)'):
+    bridge.power_status = {'pct': 15.2, 'volts': 25.7, 'amps': 0.3, 'rest_volts': 25.78,
+                           'low': True, 'return_home_volts': 25.9, 'full_volts': 27.8}
+    with pytest.raises(RuntimeError, match=r'Battery low \(25.78 V, returns home at 25.90 V\)'):
         app.start()
     app.power_on("Kumar's Lab")
     app.stack.mark_running()
     assert app.command('home') == 'Going home'
-    assert app.state()['battery']['pct'] == 17.6
+    assert app.state()['battery']['pct'] == 15.2
     bridge.power_status['low'] = False
     assert app.start()
 
 
 def test_power_settings_saved_and_checked(tmp_path, maps):
     app, _ = app_for(tmp_path, maps, FakeOS())
-    assert app.power_settings()['return_home_pct'] == 20
-    assert app.set_power_settings({'return_home_pct': 30}) == 'Returns home at 30 % (7S pack)'
-    assert json.load(open(tmp_path / 'config' / 'power.json'))['return_home_pct'] == 30
+    assert app.power_settings()['return_home_volts'] == 25.9
+    assert app.set_power_settings({'return_home_volts': 26.2}).startswith(
+        'Returns home at 26.20 V (about ')
+    assert json.load(open(tmp_path / 'config' / 'power.json'))['return_home_volts'] == 26.2
     with pytest.raises(ValueError):
-        app.set_power_settings({'return_home_pct': 95})
+        app.set_power_settings({'return_home_volts': 29.0})
     with pytest.raises(ValueError):
         app.set_power_settings({'cells': 5})
-    assert app.power_settings()['return_home_pct'] == 30
+    assert app.power_settings()['return_home_volts'] == 26.2
+
+
+def test_low_battery_is_one_alert(tmp_path, maps):
+    app, _ = app_for(tmp_path, maps, FakeOS())
+    status = {'pct': 40.0, 'rest_volts': 26.5, 'low': False, 'return_home_volts': 25.9}
+    app.power_event(status)
+    assert app.alerts.list() == []
+    low = {**status, 'pct': 15.0, 'rest_volts': 25.8, 'low': True}
+    app.power_event(low)
+    app.power_event(low)                           # twice a second while low: one alert
+    alerts = app.alerts.list()
+    assert len(alerts) == 1 and alerts[0]['kind'] == 'battery'
+    assert alerts[0]['text'] == 'Battery low (25.80 V, returns home at 25.90 V): going home'
+    app.power_event(status)                        # charged, then low again: a new alert
+    app.power_event(low)
+    assert len(app.alerts.list()) == 2
+
+
+def test_unauthorized_face_is_an_alert_with_a_snapshot(tmp_path, maps):
+    app, _ = app_for(tmp_path, maps, FakeOS())
+    t = [100.0]
+    app.clock = lambda: t[0]
+    app.face_event('SCANNING')
+    app.face_event('AUTHORIZED', 'Ana')
+    assert app.alerts.list() == []
+    app.face_event('UNAUTHORIZED')
+    app.face_event('UNAUTHORIZED')                 # still in view: no new alert
+    alerts = app.alerts.list()
+    assert len(alerts) == 1 and alerts[0]['kind'] == 'face' and alerts[0]['snapshot']
+    t[0] += 10
+    app.face_event('NO_PERSON')
+    app.face_event('UNAUTHORIZED')                 # back within FACE_ALERT_S: not new
+    assert len(app.alerts.list()) == 1
+    t[0] += wl.FACE_ALERT_S
+    app.face_event('NO_PERSON')
+    app.face_event('UNAUTHORIZED')
+    assert len(app.alerts.list()) == 2
+
+
+def test_only_the_tamper_alert_re_enables_the_motors(tmp_path, maps):
+    app, bridge = app_for(tmp_path, maps, FakeOS())
+    bridge.tamper_status = ('tripped', 'lift')
+    app.tamper_event('tripped', 'lift')
+    app.face_event('UNAUTHORIZED')
+    face = [a for a in app.alerts.list() if a['kind'] == 'face'][0]['id']
+    assert 'stay off' in app.ack_alert(face)
+    assert 'tamper:clear' not in bridge.sent
+    assert 'enabled again' in app.ack_alert()
+    assert 'tamper:clear' in bridge.sent
 
 
 def test_faces_setting_goes_into_the_launch(tmp_path, maps):
@@ -1020,8 +1086,8 @@ def test_http_alerts_and_power(server):
     assert call(base + '/api/alerts/ack', {'id': alerts[0]['id']})[0] == 200
     assert 'tamper:clear' in bridge.sent
     code, _, body = call(base + '/api/power/settings')
-    assert json.loads(body)['return_home_pct'] == 20
-    assert call(base + '/api/power/settings', {'return_home_pct': 25})[0] == 200
-    assert call(base + '/api/power/settings', {'return_home_pct': 'x'})[0] == 400
+    assert json.loads(body)['return_home_volts'] == 25.9
+    assert call(base + '/api/power/settings', {'return_home_volts': 26.0})[0] == 200
+    assert call(base + '/api/power/settings', {'return_home_volts': 'x'})[0] == 400
     assert call(base + '/api/settings/faces', {'on': True})[0] == 200
     assert json.loads(call(base + '/api/state')[2])['settings'] == {'faces': True}

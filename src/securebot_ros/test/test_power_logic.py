@@ -11,98 +11,128 @@ def test_cell_curve_ends_and_middle():
     assert pl.cell_percent(4.20) == 100.0
     assert pl.cell_percent(3.0) == 0.0
     assert pl.cell_percent(3.84) == pytest.approx(50.0)
-    assert 20.0 < pl.cell_percent(3.74) < 25.0
     values = [pl.cell_percent(v / 100) for v in range(320, 425)]
     assert values == sorted(values)                       # never goes down as voltage rises
 
 
-def test_pack_percent_6s_and_7s_and_load():
-    assert pl.pack_percent(25.2, 0.0, 6, 0.25) == 100.0   # 6S full
-    assert pl.pack_percent(25.2, 0.0, 7, 0.25) < 10.0     # the same voltage is nearly empty 7S
-    assert pl.pack_percent(29.4, 0.0, 7, 0.25) == 100.0
-    rest = pl.pack_percent(23.04, 0.0, 6, 0.25)           # 3.84 V per cell: 50 %
-    sagging = pl.pack_percent(22.54, 2.0, 6, 0.25)        # 0.5 V lower while 2 A flow
-    assert sagging == pytest.approx(rest)
-    assert pl.pack_percent(23.04, -1.0, 6, 0.25) == pytest.approx(rest)   # charging: no lift
+def test_pack_percent_is_of_the_full_voltage():
+    s = pl.DEFAULTS
+    assert pl.pack_percent(27.8, s) == 100.0              # the robot's pack, fully charged
+    assert pl.pack_percent(28.3, s) == 100.0
+    assert 10 < pl.pack_percent(s['return_home_volts'], s) < 25
+    assert pl.pack_percent(20.0, s) == 0.0
+    values = [pl.pack_percent(v / 10, s) for v in range(220, 280)]
+    assert values == sorted(values)
 
 
 def test_settings_defaults_validation_and_round_trip(tmp_path):
     path = str(tmp_path / 'config' / 'power.json')
     assert pl.load_settings(path) == pl.DEFAULTS
-    saved = pl.save_settings({'return_home_pct': '25', 'cells': 7, 'pack_ohms': 0.3}, path)
-    assert saved == {'return_home_pct': 25, 'cells': 7, 'pack_ohms': 0.3}
+    saved = pl.save_settings({**pl.DEFAULTS, 'return_home_volts': '26.2'}, path)
+    assert saved['return_home_volts'] == 26.2
     assert pl.load_settings(path) == saved
-    for bad in ({'return_home_pct': 2, 'cells': 6, 'pack_ohms': 0.2},
-                {'return_home_pct': 20, 'cells': 8, 'pack_ohms': 0.2},
-                {'return_home_pct': 20, 'cells': 6, 'pack_ohms': -1},
-                {'return_home_pct': 'x', 'cells': 6, 'pack_ohms': 0.2}):
+    for bad in ({'return_home_volts': 20.0},              # under 3.3 V a cell
+                {'return_home_volts': 27.6},              # less than 0.5 V under full
+                {'full_volts': 31.0},
+                {'cells': 8},
+                {'pack_ohms': -1},
+                {'max_amps': 0},
+                {'return_home_volts': 'x'}):
         with pytest.raises(ValueError):
-            pl.save_settings(bad, path)
+            pl.save_settings({**pl.DEFAULTS, **bad}, path)
     with open(path, 'w') as f:
         f.write('{broken')
     assert pl.load_settings(path) == pl.DEFAULTS
-    with open(path, 'w') as f:
-        json.dump({'return_home_pct': 999}, f)
+    with open(path, 'w') as f:                            # the old %-based file: defaults
+        json.dump({'return_home_pct': 20, 'cells': 7, 'pack_ohms': 0.25}, f)
     assert pl.load_settings(path) == pl.DEFAULTS
 
 
-def volts_for(pct, cells=pl.DEFAULTS["cells"]):
-    """Resting pack voltage at about `pct` (inverse of the curve, by search)."""
-    lo, hi = 3.0 * cells, 4.25 * cells
-    for _ in range(60):
-        mid = (lo + hi) / 2
-        if pl.pack_percent(mid, 0, cells, 0) < pct:
-            lo = mid
-        else:
-            hi = mid
-    return hi
+def test_load_compensation_below_the_current_limit():
+    m = pl.BatteryMonitor()
+    m.update(0.0, 26.5, 0.0)
+    m.update(0.5, 26.5 - 0.6 * 0.25, 0.6)                  # 0.6 A: sag added back
+    assert m.rest == pytest.approx(26.5)
+    assert not m.held
 
 
 def test_low_only_after_holding_under_the_level():
+    level = pl.DEFAULTS['return_home_volts']
     m = pl.BatteryMonitor()
-    assert m.update(0.0, volts_for(60), 0.0) is None
-    assert m.status(0.0)['pct'] == pytest.approx(60, abs=0.5)
-    t = 0.0
-    # a motor start sags the voltage for a moment: not low
-    m2 = pl.BatteryMonitor({**pl.DEFAULTS, 'pack_ohms': 0.0})
-    m2.update(0.0, volts_for(25), 0.0)
-    m2.update(0.5, volts_for(5), 6.0)
+    assert m.update(0.0, level + 1.0, 0.0) is None
+    m2 = pl.BatteryMonitor({**pl.DEFAULTS, 'pack_ohms': 0.0})   # a moment's sag: not low
+    m2.update(0.0, level + 0.2, 0.0)
+    m2.update(0.5, level - 2.0, 0.5)
     assert not m2.low
-    # really under the level: low after LOW_HOLD_S, once
     m = pl.BatteryMonitor()
-    m.update(0.0, volts_for(19), 0.0)
+    m.update(0.0, level - 0.1, 0.0)
     events = []
+    t = 0.0
     for i in range(1, 30):
         t = i * 0.5
-        events.append(m.update(t, volts_for(19), 0.0))
+        events.append(m.update(t, level - 0.1, 0.0))
     assert events.count('low') == 1
     assert events.index('low') * 0.5 + 0.5 >= pl.LOW_HOLD_S
-    assert m.status(t)['low']
+    s = m.status(t)
+    assert s['low'] and s['return_home_volts'] == level
 
 
 def test_low_clears_only_when_charged_above_the_margin():
+    level = pl.DEFAULTS['return_home_volts']
     m = pl.BatteryMonitor()
     t = 0.0
     while not m.low:
         t += 0.5
-        m.update(t, volts_for(15), 0.0)
-    for _ in range(200):                     # back to 22 %: still low (no flapping)
+        m.update(t, level - 0.3, 0.0)
+    for _ in range(200):                     # just over the level: still low (no flapping)
         t += 0.5
-        m.update(t, volts_for(22), 0.0)
+        m.update(t, level + 0.1, 0.0)
     assert m.low
-    for _ in range(200):                     # charged to 40 %
+    for _ in range(200):                     # charged
         t += 0.5
-        m.update(t, volts_for(40), 0.0)
+        m.update(t, level + 1.0, 0.0)
     assert not m.low
+
+
+def test_current_at_the_limit_holds_the_last_good_voltage():
+    s = {**pl.DEFAULTS, 'pack_ohms': 0.25}
+    m = pl.BatteryMonitor(s)
+    t = 0.0
+    for _ in range(10):                      # standing: 26.5 V
+        t += 0.5
+        m.update(t, 26.5, 0.3)
+    good = m.rest
+    for _ in range(40):                      # driving at 3 A: 0.75 V sag, reads 0.82 A
+        t += 0.5
+        assert m.update(t, 26.5 + 0.3 * 0.25 - 3 * 0.25, 0.82) is None
+    assert m.rest == pytest.approx(good) and m.held
+    assert m.status(t)['held']
+    m.update(t + 0.5, 26.5, 0.3)             # stopped again: updates
+    assert not m.held
+
+
+def test_a_long_drive_at_the_limit_uses_the_low_reading():
+    """Held for longer than HOLD_MAX_S, the clipped (too low) voltage counts: the robot then
+    goes home early instead of running flat."""
+    level = pl.DEFAULTS['return_home_volts']
+    m = pl.BatteryMonitor()
+    t = 0.0
+    m.update(t, level + 0.3, 0.3)
+    events = []
+    while t < pl.HOLD_MAX_S + pl.SMOOTH_S * 3 + pl.LOW_HOLD_S:
+        t += 0.5
+        events.append(m.update(t, level - 0.5, 0.82))
+    assert 'low' in events and not m.held
 
 
 def test_no_reading_means_unknown():
     m = pl.BatteryMonitor()
     assert m.status(0.0)['pct'] is None
-    m.update(0.0, volts_for(50), 0.0)
+    m.update(0.0, 26.5, 0.0)
     assert m.status(1.0)['pct'] is not None
     s = m.status(1.0 + pl.STALE_S + 1)
-    assert s['pct'] is None and not s['low'] and s['return_home_pct'] == 20
+    assert s['pct'] is None and s['rest_volts'] is None and not s['low']
+    assert s['return_home_volts'] == pl.DEFAULTS['return_home_volts']
 
 
 def test_impossible_voltage_is_no_reading():

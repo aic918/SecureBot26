@@ -10,8 +10,9 @@ whether to keep patrolling or hold a security stop.
 - **ESP32:** motors, two front ultrasonics, MPU-6050 gyro and accelerometer (heading, tamper
   detection), INA226 battery monitor and wheel encoders; takes commands from the Jetson over
   USB (protocol and pins: `firmware/esp32/README.md`).
-- **Battery:** 24 V 3.2 Ah lithium-ion pack (6S, 25.2 V full; 7S packs read 29.4 V full),
-  measured by the INA226 (36 V max; the INA219's 26 V is too low for this pack).
+- **Battery:** 24 V 3.2 Ah lithium-ion pack (PB240A1, 7 cells in series, 27.8 V when fully
+  charged), measured by the INA226 (36 V max; the INA219's 26 V is too low for this pack). Its
+  R100 shunt reads the current up to ~0.82 A.
 - **RPLidar A1M8:** 360° scans for mapping and localization.
 
 ```
@@ -59,7 +60,7 @@ who can open the panel can drive the robot and enroll faces). Don't run robot la
 from a terminal at the same time.
 
 ### Using it
-1. Pick the room in the box at the top (or **Show on main screen** in the Map manager).
+1. Pick the room in the box at the top.
 2. Press **Start**. If the robot software is off, Start powers it on, waits until the robot has
    found itself on the map, then starts the laps; the pill at the top shows what it's doing.
 3. Press **Return home** when done (or **Stop** to halt where it is), then **Power off**.
@@ -75,22 +76,30 @@ from a terminal at the same time.
 | **Face recognition** (switch) | Runs live face recognition alongside the laps or mapping, from the next Power on. The **Faces** line shows what it sees (authorized / unauthorized / scanning, with names). The camera view keeps working: it shows the face node's frames. |
 | **Power off** | Shuts the robot software down (asks first). |
 | **■ STOP** (corner) | Shown while the robot moves: same as **Stop**, always in reach. |
-| **Battery** (map corner) | The pack's charge while the robot software is on (`—%` with no reading); green, amber at 50 % and under, red when low. Click it to set the **return-home level** (default 20 %) and the pack type (6S / 7S). |
+| **Battery** (header, every page) | The pack's charge while the robot software is on (`—%` with no reading; 27.8 V = 100 %); green, amber at 50 % and under, red when low. The status list shows the %, volts and amps. Click it to set the **return-home voltage** (default 25.9 V). |
 
 **Map view:** the room, the robot, the planned lanes, the path being driven now, home, the
 no-pass lines (black, outlined) and orange boxes where something blocked the robot. Tap a box
 to remove it; scroll or pinch to zoom, drag to pan, **Fit** to see it all.
-**Logs** (under the view): this run's log and the last 10 runs' files.
-**Alerts** (under the logs): every tamper alert with its time and snapshot.
+**Logs** (under the view): this run's log and the last 30 runs' files (older logs are deleted for good).
+**Alerts** (under the logs): everything worth noting, with its time: tampering and
+unauthorized faces (with a webcam snapshot) and a low battery. Alerts are silent: the newest
+unacknowledged one shows as a red banner on every page.
 
-**Low battery:** when the charge stays at or under the return-home level for 10 s, the robot
-stops its laps or mapping and drives home (the pill says *battery low*), and Start is refused
-until it is charged.
+**Low battery:** decided on the battery's resting voltage (the measured voltage plus the sag
+from the current drawn). When it stays at or under the return-home voltage for 10 s, the robot
+stops its laps or mapping and drives home (the pill says *battery low*, and an alert is
+added), and Start is refused until it is charged. While driving draws more than the sensor
+can read (~0.82 A), the last good voltage is held; after 60 s of that the lower reading is used,
+so the robot goes home early rather than running flat.
+
+**Unauthorized face:** with face recognition on, an unknown person coming into view adds an
+alert with a snapshot (not again for the same person within 60 s).
 
 **Tamper alert:** with the robot software on, lifting or tipping the robot stops the motors at
 once (in the ESP32 itself) and a red banner appears on every page with the time and a webcam
-snapshot (click it to enlarge), with a beep. The motors stay off and Start is refused until
-you press **Acknowledge**; then press Start to carry on. Alerts are kept in `alerts/`
+snapshot (click it to enlarge). The motors stay off and Start is refused until you
+acknowledge the tamper alert; then press Start to carry on. Alerts are kept in `alerts/`
 (newest 100). A pager can be hooked in later (`web_alerts.AlertStore.hooks`).
 
 ### Map manager
@@ -99,7 +108,6 @@ Back to return).
 
 | Control | What it does |
 |---|---|
-| **Show on main screen** | Makes the selected room the one Start runs in. |
 | **Rename** | Renames the room. |
 | **Delete** | Removes the room; its map files and lines move to `maps/deleted/`. |
 | **Add** | Maps a new room: name it, put the robot in the room, press **Start** on the Robot page and it explores on its own while the map grows on screen. **Stop** (or a fully scanned room) saves it as that room. |
@@ -123,8 +131,8 @@ open their photos. Stop the live face node first: taking photos needs the camera
 - **Gyro not found** (`imu not found ... SDA=0` in the log): power-cycle the robot; if it
   persists, check the MPU-6050 wiring, then **Power off** and **Start** again.
 - **Battery shows `—%` while on:** `power monitor not found` in the log: check the INA226
-  wiring (`firmware/esp32/README.md`). A percentage that looks wrong: check the pack type (6S
-  or 7S) in the battery dialog.
+  wiring (`firmware/esp32/README.md`). A percentage that looks wrong: check the full voltage
+  (`full_volts` in `config/power.json`, 27.8 V) against a multimeter after a full charge.
 - **Tamper detection "Unavailable":** the accelerometer did not answer at boot (same wiring as
   the gyro). **Tamper alerts while just driving:** raise `TAMPER_LIFT_G` / `TAMPER_TILT_DEG`
   in the firmware.

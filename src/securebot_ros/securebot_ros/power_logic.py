@@ -1,35 +1,43 @@
 """SecureBot power monitor and tamper logic (no ROS here, so it can be tested on its own).
 
-Battery: a 24 V 3.2 Ah lithium-ion pack (the robot's is 7S, 29.4 V full, the default; 6S
-packs, 25.2 V full, are also sold as "24 V") measured by an INA226 on the ESP32's I2C bus.
-The firmware sends the pack voltage and current (`B,<mV>,<mA>`); BatteryMonitor turns them
-into a percentage:
+Battery: the robot's 24 V 3.2 Ah lithium-ion pack (PB240A1, 7 cells in series), 27.8 V when
+fully charged, measured by an INA226 on the ESP32's I2C bus. The firmware sends the pack
+voltage and current (`B,<mV>,<mA>`); BatteryMonitor turns them into a resting voltage:
 
   * load compensation: under load the voltage sags by current x pack resistance, so
-    V_rest = V + I * R before looking the voltage up (otherwise driving reads ~10 % lower
-    than standing still);
-  * the per-cell resting-voltage curve of a lithium-ion (NMC) cell;
+    V_rest = V + I * R;
+  * current limit: the module's R100 shunt reads at most ~0.82 A, while driving takes more.
+    Then V + I * R comes out too low, so while the current is at the limit the last good
+    resting voltage is held. Held for longer than HOLD_MAX_S (a long drive), the clipped,
+    too-low value is used after all: the robot then goes home early rather than running flat;
   * smoothing over SMOOTH_S, so a motor start does not swing the number.
 
-Low battery: the percentage at or under the return-home level for LOW_HOLD_S makes it "low"
-(once); it is "low" until the percentage is back REARM_MARGIN above the level (charged).
+Low battery is decided on that voltage: at or under the return-home voltage for LOW_HOLD_S
+makes it "low" (once); it is "low" until the voltage is back REARM_V above the level
+(charged). The percentage shown is for people: the lithium-ion cell curve, scaled so the
+pack's full voltage is 100 %.
 
-Settings (return-home level, cells, pack resistance) live in a small JSON file that the web
-panel writes and the guard node re-reads when it changes.
+Settings (return-home voltage, full voltage, cells, pack resistance, current limit) live in
+a small JSON file that the web panel writes and the guard node re-reads when it changes.
 """
 import json
 import os
 
 SETTINGS_FILE = os.path.expanduser('~/securebot_ws/config/power.json')
-DEFAULTS = {'return_home_pct': 20, 'cells': 7, 'pack_ohms': 0.25}   # robot's pack: 7S
-MIN_RETURN_PCT, MAX_RETURN_PCT = 5, 80
+DEFAULTS = {'return_home_volts': 25.9,   # 3.7 V a cell: about 18 % of the pack's charge left
+            'full_volts': 27.8,          # the robot's pack after a full charge
+            'cells': 7,
+            'pack_ohms': 0.25,
+            'max_amps': 0.8}             # current the INA226 can read (R100 shunt: 0.82 A)
 CELL_CHOICES = (6, 7)
 
-SMOOTH_S = 20.0          # s: time constant of the percentage smoothing
+SMOOTH_S = 20.0          # s: time constant of the voltage smoothing
 LOW_HOLD_S = 10.0        # s at or under the level before it counts as low
-REARM_MARGIN = 5.0       # % above the level before "low" clears
+REARM_V = 0.3            # V above the level before "low" clears
+HOLD_MAX_S = 60.0        # s at the current limit before the clipped reading is used anyway
 STALE_S = 5.0            # s without a reading: battery unknown
 MIN_CELL_V = 2.0         # V per cell: anything lower is not a battery reading (sensor/wiring)
+MIN_CELL_LEVEL, MAX_CELL_LEVEL = 3.3, 4.0   # V per cell the return-home level may be set to
 
 # resting voltage of one lithium-ion (NMC) cell -> % charge
 CELL_CURVE = [(3.27, 0), (3.61, 5), (3.69, 10), (3.71, 15), (3.73, 20), (3.75, 25),
@@ -48,9 +56,14 @@ def cell_percent(volts):
     return 100.0
 
 
-def pack_percent(volts, amps, cells, pack_ohms):
-    """% charge of a `cells`-series pack reading `volts` while `amps` flow out of it."""
-    return cell_percent((volts + max(0.0, amps) * pack_ohms) / cells)
+def pack_percent(rest_volts, settings):
+    """% (0..100) of the pack's usable charge at this resting voltage: its full voltage is
+    100 %."""
+    cells = settings['cells']
+    full = cell_percent(settings['full_volts'] / cells)
+    if full <= 0:
+        return 0.0
+    return max(0.0, min(100.0, 100.0 * cell_percent(rest_volts / cells) / full))
 
 
 def load_settings(path=SETTINGS_FILE):
@@ -72,18 +85,27 @@ def load_settings(path=SETTINGS_FILE):
 def check_settings(settings):
     """Validated copy of settings, or ValueError saying what is wrong."""
     try:
-        pct = int(settings['return_home_pct'])
+        level = round(float(settings['return_home_volts']), 2)
+        full = round(float(settings['full_volts']), 2)
         cells = int(settings['cells'])
         ohms = float(settings['pack_ohms'])
+        max_amps = float(settings['max_amps'])
     except (KeyError, TypeError, ValueError):
-        raise ValueError('Settings need return_home_pct, cells and pack_ohms as numbers')
-    if not MIN_RETURN_PCT <= pct <= MAX_RETURN_PCT:
-        raise ValueError(f'Return home at {MIN_RETURN_PCT}-{MAX_RETURN_PCT} %')
+        raise ValueError('Settings need return_home_volts, full_volts, cells, pack_ohms and '
+                         'max_amps as numbers')
     if cells not in CELL_CHOICES:
-        raise ValueError('The pack has 6 or 7 cells in series (25.2 V or 29.4 V full)')
+        raise ValueError('The pack has 6 or 7 cells in series')
+    if not 3.6 * cells <= full <= 4.25 * cells:
+        raise ValueError(f'A full {cells}-cell pack reads {3.6 * cells:.1f}-{4.25 * cells:.1f} V')
+    lo, hi = MIN_CELL_LEVEL * cells, min(MAX_CELL_LEVEL * cells, full - 0.5)
+    if not lo <= level <= hi:
+        raise ValueError(f'Return home at {lo:.1f}-{hi:.1f} V')
     if not 0.0 <= ohms <= 2.0:
         raise ValueError('Pack resistance must be 0-2 ohm')
-    return {'return_home_pct': pct, 'cells': cells, 'pack_ohms': ohms}
+    if not 0.1 <= max_amps <= 20.0:
+        raise ValueError('Current limit must be 0.1-20 A')
+    return {'return_home_volts': level, 'full_volts': full, 'cells': cells,
+            'pack_ohms': ohms, 'max_amps': max_amps}
 
 
 def save_settings(settings, path=SETTINGS_FILE):
@@ -98,36 +120,49 @@ def save_settings(settings, path=SETTINGS_FILE):
 
 
 class BatteryMonitor:
-    """Readings in, smoothed percentage and the low-battery decision out."""
+    """Readings in, smoothed resting voltage, percentage and the low-battery decision out."""
 
     def __init__(self, settings=None):
         self.settings = dict(settings or DEFAULTS)
-        self.pct = None
-        self.volts = self.amps = None
-        self.last_t = None
+        self.rest = None                  # smoothed resting voltage (V)
+        self.volts = self.amps = None     # the last reading as measured
+        self.last_t = None                # time of the last reading
+        self.clip_since = None            # current at the limit since (None: below it)
+        self.held = False                 # the last reading was held (current at the limit)
         self.under_since = None
         self.low = False
 
     def update(self, t, volts, amps):
         """A reading at time t (s). Returns 'low' the moment the battery becomes low, else
         None. A voltage no pack can have (VBS not wired, no battery) is ignored, so the battery
-        shows as unknown instead of 0 % and nobody is sent home on a wiring fault."""
+        shows as unknown instead of 0 V and nobody is sent home on a wiring fault."""
         s = self.settings
         if volts < MIN_CELL_V * s['cells']:
             return None
-        raw = pack_percent(volts, amps, s['cells'], s['pack_ohms'])
-        if self.pct is None or self.last_t is None or t - self.last_t > STALE_S:
-            self.pct = raw
+        fresh = self.rest is not None and self.last_t is not None and t - self.last_t <= STALE_S
+        self.volts, self.amps = volts, amps
+        estimate = volts + max(0.0, amps) * s['pack_ohms']
+        if amps >= s['max_amps']:
+            if self.clip_since is None:
+                self.clip_since = t
+            self.held = fresh and t - self.clip_since < HOLD_MAX_S
         else:
+            self.clip_since, self.held = None, False
+        if not fresh:
+            self.rest = estimate
+        elif not self.held:
             a = min(1.0, max(0.0, t - self.last_t) / SMOOTH_S)
-            self.pct += a * (raw - self.pct)
-        self.volts, self.amps, self.last_t = volts, amps, t
-        level = s['return_home_pct']
+            self.rest += a * (estimate - self.rest)
+        self.last_t = t
+        return self._judge(t)
+
+    def _judge(self, t):
+        level = self.settings['return_home_volts']
         if self.low:
-            if self.pct >= level + REARM_MARGIN:
+            if self.rest >= level + REARM_V:
                 self.low, self.under_since = False, None
             return None
-        if self.pct > level:
+        if self.rest > level:
             self.under_since = None
             return None
         if self.under_since is None:
@@ -137,15 +172,26 @@ class BatteryMonitor:
             return 'low'
         return None
 
+    @property
+    def pct(self):
+        return None if self.rest is None else pack_percent(self.rest, self.settings)
+
     def status(self, t):
         """For /power/status: None fields when no recent reading (no sensor)."""
+        s = self.settings
         fresh = self.last_t is not None and t - self.last_t <= STALE_S
-        return {'pct': round(self.pct, 1) if fresh else None,
-                'volts': round(self.volts, 2) if fresh else None,
-                'amps': round(self.amps, 2) if fresh else None,
+
+        def r(v, n=2):
+            return round(v, n) if fresh else None
+        return {'pct': r(self.pct, 1) if fresh else None,
+                'volts': r(self.volts), 'amps': r(self.amps),
+                'rest_volts': r(self.rest) if fresh else None,
+                'held': self.held and fresh,
                 'low': self.low and fresh,
-                'return_home_pct': self.settings['return_home_pct'],
-                'cells': self.settings['cells']}
+                'return_home_volts': s['return_home_volts'],
+                'return_home_pct': round(pack_percent(s['return_home_volts'], s)),
+                'full_volts': s['full_volts'],
+                'cells': s['cells']}
 
 
 # ------------------------------------------------------------------------------ tamper

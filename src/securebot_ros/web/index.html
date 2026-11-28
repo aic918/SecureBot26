@@ -9,7 +9,7 @@
   :root {
     --bg: #0b1017; --panel: #121a24; --panel2: #18222f; --line: #243245; --text: #e3e9f0;
     --muted: #8a99ab; --accent: #22c3a6; --go: #2fb76b; --stop: #e5484d; --home: #4c7dff;
-    --warn: #f5a524; --robot: #22c3a6; --lane: rgba(76, 125, 255, .55); --current: #ff8a3d;
+    --warn: #f5a524; --robot: #22c3a6; --lane: rgba(76, 125, 255, .55); --current: #3ddc68;
     --box: #ff8a3d; --nopass: #000; --nopass-edge: #f5a524;
     --radius: 12px;
   }
@@ -131,7 +131,7 @@
   .toggle input:checked::after { transform: translateX(16px); background: var(--accent); }
   .toggle small { color: var(--muted); display: block; font-size: 12px; }
 
-  /* tamper alert: on every page until acknowledged */
+  /* newest alert: on every page until acknowledged (silent) */
   .alertbar { display: flex; align-items: center; gap: 14px; padding: 12px; margin-bottom: 16px;
               border-radius: var(--radius); background: rgba(229, 72, 77, .14);
               border: 1px solid var(--stop); animation: alertpulse 1.6s ease-in-out infinite; }
@@ -364,7 +364,6 @@
         <div><span>Position</span><span id="s-loc">—</span></div>
         <div><span>ESP32</span><span id="s-esp">—</span></div>
         <div><span>Faces</span><span id="s-faces">—</span></div>
-        <div><span>Tamper</span><span id="s-tamper">—</span></div>
         <div><span>Battery</span><span id="s-bat">—</span></div>
       </div>
       <div class="note" id="s-note"></div>
@@ -400,7 +399,7 @@
 
       <details class="card logs" id="logs">
         <summary><svg class="chev" width="16" height="16"><use href="#i-chev"/></svg>Logs
-          <small>(last 10 runs)</small></summary>
+          <small>(last 30 runs)</small></summary>
         <div class="inner">
           <div class="card-h" style="margin-top:4px">This run</div>
           <pre id="log">No log yet.</pre>
@@ -409,8 +408,7 @@
       </details>
 
       <details class="card logs" id="alerts">
-        <summary><svg class="chev" width="16" height="16"><use href="#i-chev"/></svg>Alerts
-          <small id="alerts-sub">(tamper events)</small></summary>
+        <summary><svg class="chev" width="16" height="16"><use href="#i-chev"/></svg>Alerts</summary>
         <div class="inner"><ul class="alerts" id="alertlist"><li>No alerts.</li></ul></div>
       </details>
     </div>
@@ -423,7 +421,6 @@
     <div class="tiles" id="maptiles"></div>
     <div class="actions">
       <span class="hint" id="maphint">Select a map.</span>
-      <button class="btn" id="m-use">Show on main screen</button>
       <button class="btn" id="m-rename">Rename</button>
       <button class="btn danger" id="m-delete">Delete</button>
       <button class="btn accent" id="m-add">Add</button>
@@ -1041,10 +1038,6 @@ function renderRobot() {
   $('s-faces').textContent = fl ? (fl.status.replace('_', ' ').toLowerCase() + (fl.names ? ` (${fl.names})` : '')) :
     (on && S.settings.faces ? 'starting…' : 'off');
   $('s-faces').style.color = fl && fl.status === 'UNAUTHORIZED' ? 'var(--stop)' : '';
-  const ts = S.tamper.state;
-  $('s-tamper').textContent = on ? (TAMPER[ts] || ts) : 'off';
-  $('s-tamper').style.color = ts === 'tripped' ? 'var(--stop)' : ts === 'armed' && on ? 'var(--go)' : '';
-  $('s-tamper').title = ts === 'unavailable' && on ? 'No accelerometer reading from the ESP32 (MPU-6050)' : '';
   $('mode-pill').hidden = !exploring;
   $('mode-pill').innerHTML = exploring ? `<i style="background:var(--warn)"></i>Mapping ${esc(S.active || '')}` : '';
   $('log').textContent = (S.stack.log || []).join('\n') || 'No log yet.';
@@ -1068,39 +1061,25 @@ async function loadRuns() {
 }
 $('logs').addEventListener('toggle', () => { if ($('logs').open) loadRuns(); });
 
-// ---------------------------------------------------------------- battery, tamper alerts, faces
-const TAMPER = {off: 'Off', armed: 'Armed', tripped: 'TRIPPED', unavailable: 'Unavailable'};
+// ---------------------------------------------------------------- battery, alerts, faces
 const snapUrl = a => '/api/alerts/snapshot.jpg?id=' + enc(a.id);
 function showImage(src) { $('imgview').querySelector('img').src = src; $('imgview').hidden = false; }
 $('imgview').onclick = () => { $('imgview').hidden = true; };
 
 let alertsSeen = null;              // newest unacknowledged alert id already announced
-function beep() {
-  try {
-    const ac = new (window.AudioContext || window.webkitAudioContext)();
-    [0, 0.25, 0.5].forEach(t => {
-      const o = ac.createOscillator(), g = ac.createGain();
-      o.frequency.value = 880; o.connect(g); g.connect(ac.destination);
-      g.gain.setValueAtTime(0.15, ac.currentTime + t);
-      g.gain.setValueAtTime(0, ac.currentTime + t + 0.15);
-      o.start(ac.currentTime + t); o.stop(ac.currentTime + t + 0.16);
-    });
-  } catch (e) { /* no audio: the banner is enough */ }
-}
 function renderAlert() {
   const a = (S.alerts || [])[0];
   $('alertbar').hidden = !a;
   if (!a) { alertsSeen = null; return; }
   if (alertsSeen !== a.id) {
     alertsSeen = a.id;
-    beep();
     $('ab-img').src = a.snapshot ? snapUrl(a) : '';
     if ($('alerts').open) loadAlerts();
   }
-  $('ab-img').hidden = !a.snapshot; $('ab-noimg').hidden = !!a.snapshot;
+  $('ab-img').hidden = !a.snapshot; $('ab-noimg').hidden = !!a.snapshot || a.kind === 'battery';
   $('ab-title').textContent = a.text;
   const more = S.alerts.length > 1 ? ` · ${S.alerts.length - 1} more unacknowledged` : '';
-  const still = S.tamper.state === 'tripped' ? ' · motors off until you acknowledge' : '';
+  const still = a.kind === 'tamper' && S.tamper.state === 'tripped' ? ' · motors off until you acknowledge' : '';
   $('ab-meta').textContent = a.time_text + still + more;
   $('ab-ack').dataset.id = a.id;
 }
@@ -1147,7 +1126,9 @@ function renderBattery() {
   el.title = pct == null ?
     (b ? 'No battery reading: is the INA226 wired? (click to set the return-home level)' :
      'Battery shows while the robot software is on (click to set the return-home level)') :
-    `${b.volts.toFixed(2)} V, ${b.amps.toFixed(2)} A · returns home at ${b.return_home_pct}%` +
+    `${b.volts.toFixed(2)} V, ${b.amps.toFixed(2)} A · returns home at ` +
+    (b.return_home_volts != null ? `${b.return_home_volts.toFixed(2)} V` : `${b.return_home_pct}%`) +
+    (b.held ? ' · held: the current is over what the sensor reads' : '') +
     (b.low ? ' · LOW: going home' : '') + ' (click to change)';
   $('s-bat').textContent = pct == null ? (b ? 'no reading' : 'robot software off') :
     `${pct}% · ${b.volts.toFixed(2)} V · ${b.amps.toFixed(2)} A` + (b.low ? ' · LOW' : '');
@@ -1156,25 +1137,18 @@ function renderBattery() {
 async function batteryDialog() {
   let cur;
   try { cur = await api('/api/power/settings'); } catch (e) { toast(e.message, true); return; }
+  if (cur.return_home_volts == null) { toast('Restart the web panel to set the return-home voltage', true); return; }
   const b = S && S.battery;
-  const now = b && b.pct != null ? `Now ${Math.round(b.pct)}% (${b.volts.toFixed(2)} V, ${b.amps.toFixed(2)} A). ` : '';
-  const r = await ask({title: 'Return home on low battery', input: true, value: String(cur.return_home_pct),
-    text: `${now}The robot stops its laps or mapping and drives home when the battery reaches this level ` +
-          `(5–80 %). Pack: ${cur.cells}S lithium-ion, ${cur.cells === 6 ? '25.2' : '29.4'} V full.`,
-    buttons: [{label: 'Cancel', value: null}, {label: 'Pack type…', value: 'pack'},
-              {label: 'Save', cls: 'accent', value: 'save'}]});
+  const now = b && b.pct != null ? `Now ${b.volts.toFixed(2)} V (${Math.round(b.pct)}%). ` : '';
+  const lo = (3.3 * cur.cells).toFixed(1), hi = Math.min(4.0 * cur.cells, cur.full_volts - 0.5).toFixed(1);
+  const r = await ask({title: 'Return home on low battery', input: true, value: cur.return_home_volts.toFixed(2),
+    text: `${now}The robot stops its laps or mapping and drives home when the battery's resting voltage ` +
+          `falls to this many volts (${lo}–${hi} V). Fully charged: ${cur.full_volts.toFixed(2)} V.`,
+    buttons: [{label: 'Cancel', value: null}, {label: 'Save', cls: 'accent', value: 'save'}]});
   if (!r) return;
-  if (r.value === 'pack') {
-    const cells = await ask({title: 'Battery pack',
-      text: 'Which lithium-ion pack is in the robot? A full charge reads about 25.2 V on a 6S pack and 29.4 V on a 7S pack.',
-      buttons: [{label: 'Cancel', value: null}, {label: '6S (25.2 V full)', value: 6},
-                {label: '7S (29.4 V full)', cls: 'accent', value: 7}]});
-    if (cells) await act('/api/power/settings', {cells});
-    return;
-  }
-  const pct = Number(r.text);
-  if (!Number.isInteger(pct)) { toast('Enter a whole number of percent', true); return; }
-  await act('/api/power/settings', {return_home_pct: pct});
+  const v = Number(String(r.text).replace(',', '.').replace(/v$/i, '').trim());
+  if (!Number.isFinite(v) || !String(r.text).trim()) { toast('Enter a voltage, e.g. 25.9', true); return; }
+  await act('/api/power/settings', {return_home_volts: v});
 }
 $('bat').onclick = batteryDialog;
 $('bat').onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); batteryDialog(); } };
@@ -1235,13 +1209,11 @@ function renderMapActions() {
   $('maphint').textContent = picking ? 'Pick the map to draw no-pass lines on.' :
     mapSel ? `${mapSel} selected.` + (inUse ? ' (in use by the robot)' : '') : 'Select a map.';
   $('m-rename').disabled = $('m-delete').disabled = !mapSel || picking || inUse;
-  $('m-use').disabled = !mapSel || picking || running || (S && S.active === mapSel);
   $('m-add').disabled = picking || running;
   $('m-add').title = running ? 'Power off the robot first' : 'Map a new room: the robot explores it';
   $('m-edit').disabled = !maps.length;
 }
 $('m-edit').onclick = () => setPicking(!picking);
-$('m-use').onclick = async () => { if (await act('/api/active', {room: mapSel})) loadMaps(); };
 $('m-rename').onclick = async () => {
   const r = await ask({title: 'Rename map', input: true, value: mapSel,
     buttons: [{label: 'Cancel', value: null}, {label: 'Rename', cls: 'accent', value: true}]});

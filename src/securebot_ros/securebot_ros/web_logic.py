@@ -17,11 +17,14 @@ laps: a browser on the same network opens http://<robot>:8080 and gets
   Map manager                rename / delete rooms, draw no-pass lines on a room's map, and
                              Add: map a new room (the explore launch, its live SLAM map)
   Camera view                the webcam while someone watches it (web_camera.CameraFeed)
-  Battery                    the guard node's percentage (/power/status), the return-home
-                             level (power_logic settings) and a refused Start when it is low
-  Tamper alerts              lifted / tipped (/tamper): an alert with its time and a webcam
-                             snapshot (web_alerts.AlertStore); acknowledging it re-enables the
-                             motors ("clear" on /tamper/command)
+  Battery                    the guard node's voltage and percentage (/power/status), the
+                             return-home voltage (power_logic settings) and a refused Start
+                             when it is low
+  Alerts                     everything worth noting, with its time and a webcam snapshot
+                             (web_alerts.AlertStore): tampering (lifted / tipped, /tamper), an
+                             unauthorized face (/face_status) and a low battery (/power/status).
+                             Acknowledging the last tamper alert re-enables the motors ("clear"
+                             on /tamper/command)
   Face recognition           optional live face recognition during laps / mapping (faces:=true)
 
 The page's Start works from off: it powers the laps launch on for the active room, waits until
@@ -60,7 +63,9 @@ WS = os.path.expanduser('~/securebot_ws')
 MAPS_DIR = os.path.join(WS, 'maps')
 LOG_DIR = os.path.join(WS, 'log')
 RUNS_DIR = os.path.join(LOG_DIR, 'laps_runs')
-KEEP_LOGS = 10                # newest runs / log files / build logs kept in log/ (prune_logs)
+# newest runs / log files / build logs kept in log/; older ones are deleted for good
+# (prune_logs, at panel start and on every Start)
+KEEP_LOGS = 30
 TOOLS_DIR = os.path.join(WS, 'tools')
 SERIAL_DIR = '/dev/serial/by-path'
 LIDAR_PORT = '/dev/serial/by-path/platform-3610000.usb-usb-0:2.3:1.0-port0'
@@ -71,6 +76,7 @@ DELETED_DIR = 'deleted'       # maps/deleted/: where Delete moves a room's map f
 STATUS_FRESH = 3.0            # s: /laps/status older than this = laps node not answering
 STOP_GRACE = (20.0, 5.0)      # s after SIGINT, then after SIGTERM, before SIGKILL
 PANEL_SETTINGS = os.path.join(WS, 'config', 'panel.json')   # {"faces": bool}
+FACE_ALERT_S = 60.0           # s: an unauthorized face within this of the last alert is no new one
 
 
 # ------------------------------------------------------------------------------ rooms, maps
@@ -233,7 +239,12 @@ class StackManager:
             self.log_file = open(self.log_path, 'w')
             with open(os.path.join(self.runs_dir, f'meta_{self.run_name}.json'), 'w') as f:
                 json.dump({'room': room, 'map': yaml_path, 'kind': kind}, f)
-            prune_runs(self.runs_dir)             # the new run is the newest: it is kept
+            # the new run is the newest: it is kept; in the usual log/laps_runs layout the
+            # explore logs and colcon's build / test folders next to it are trimmed too
+            if os.path.basename(os.path.normpath(self.runs_dir)) == 'laps_runs':
+                prune_logs(os.path.dirname(os.path.normpath(self.runs_dir)))
+            else:
+                prune_runs(self.runs_dir)
             cmd = explore_command(room, port, faces) if kind == 'explore' else \
                 launch_command(yaml_path, room, port, home, rounds, near, faces)
             self.proc = self.popen(cmd, stdout=self.log_file, stderr=subprocess.STDOUT,
@@ -474,6 +485,9 @@ class PanelApp:
         self.power_file, self.settings_file = power_file, settings_file
         self.tamper_lock = threading.Lock()
         self.tamper_seen = 'unavailable'     # last /tamper state (for the tripped edge)
+        self.low_seen = False                # last /power/status low (for its edge)
+        self.face_seen = None                # last /face_status (for the UNAUTHORIZED edge)
+        self.face_alert_t = None             # clock() of the last unauthorized-face alert
         self.faces = faces or FaceEnroller()
         self.tools_dir = tools_dir
         self.stack = stack or StackManager(runs_dir, tools_dir)
@@ -765,8 +779,8 @@ class PanelApp:
                                'first (the motors stay off until then)')
         power = self.power()
         if not home and power and power.get('low'):
-            raise RuntimeError(f'Battery low ({power["pct"]:.0f} %, returns home at '
-                               f'{power["return_home_pct"]} %): charge it first')
+            raise RuntimeError(f'Battery low ({power["rest_volts"]:.2f} V, returns home at '
+                               f'{power["return_home_volts"]:.2f} V): charge it first')
 
     def power_settings(self):
         return pl.load_settings(self.power_file)
@@ -777,7 +791,8 @@ class PanelApp:
         new = {**self.power_settings(),
                **{k: changes[k] for k in pl.DEFAULTS if k in changes}}
         saved = pl.save_settings(new, self.power_file)
-        return f'Returns home at {saved["return_home_pct"]} % ({saved["cells"]}S pack)'
+        return (f'Returns home at {saved["return_home_volts"]:.2f} V '
+                f'(about {pl.pack_percent(saved["return_home_volts"], saved):.0f} %)')
 
     def tamper_event(self, state, reason):
         """Every /tamper message (ROS thread). A new 'tripped' becomes an alert with a
@@ -799,16 +814,54 @@ class PanelApp:
                             f'Robot {pl.tamper_text(reason)}: motors stopped', jpeg)
         self.spawn(record)
 
+    def power_event(self, status):
+        """Every /power/status (ROS thread). The battery becoming low is an alert."""
+        low = bool(status and status.get('low'))
+        with self.tamper_lock:
+            new_low = low and not self.low_seen
+            self.low_seen = low
+        if new_low:
+            v = status.get('rest_volts') or status.get('volts') or 0.0
+            self.spawn(lambda: self.alerts.add(
+                'battery', 'low', f'Battery low ({v:.2f} V, returns home at '
+                f'{status.get("return_home_volts", 0):.2f} V): going home'))
+
+    def face_event(self, status, names=''):
+        """Every /face_status (ROS thread). An unauthorized person coming into view is an
+        alert with a snapshot; the same person staying in view, or coming back within
+        FACE_ALERT_S, is not a new one."""
+        now = self.clock()
+        with self.tamper_lock:
+            new = (status == 'UNAUTHORIZED' and self.face_seen != 'UNAUTHORIZED'
+                   and (self.face_alert_t is None or now - self.face_alert_t >= FACE_ALERT_S))
+            self.face_seen = status
+            if new:
+                self.face_alert_t = now
+        if not new:
+            return
+
+        def record():
+            jpeg = None
+            try:
+                jpeg = self.camera.snapshot()
+            except Exception:
+                pass
+            self.alerts.add('face', 'unauthorized', 'Unauthorized person seen', jpeg)
+        self.spawn(record)
+
     def ack_alert(self, alert_id=''):
-        """Acknowledge one alert (or all); if the robot is still in its tamper alarm, let the
-        motors run again."""
+        """Acknowledge one alert (or all); when no tamper alert is left and the robot is still
+        in its tamper alarm, let the motors run again."""
         n = self.alerts.ack(alert_id or None)
         state, _ = self.tamper()
-        if state == 'tripped':
+        if state == 'tripped' and not any(a.get('kind') == 'tamper'
+                                          for a in self.alerts.unacked()):
             send = getattr(self.bridge, 'tamper_command', None)
             if send:
                 send('clear')
             return 'Acknowledged: the motors are enabled again (press Start to continue)'
+        if state == 'tripped':
+            return 'Acknowledged; the motors stay off until the tamper alert is acknowledged'
         return 'Acknowledged' if n else 'Nothing to acknowledge'
 
     # state ---------------------------------------------------------------------------------
