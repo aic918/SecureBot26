@@ -17,13 +17,21 @@ laps: a browser on the same network opens http://<robot>:8080 and gets
   Map manager                rename / delete rooms, draw no-pass lines on a room's map, and
                              Add: map a new room (the explore launch, its live SLAM map)
   Camera view                the webcam while someone watches it (web_camera.CameraFeed)
+  Battery                    the guard node's percentage (/power/status), the return-home
+                             level (power_logic settings) and a refused Start when it is low
+  Tamper alerts              lifted / tipped (/tamper): an alert with its time and a webcam
+                             snapshot (web_alerts.AlertStore); acknowledging it re-enables the
+                             motors ("clear" on /tamper/command)
+  Face recognition           optional live face recognition during laps / mapping (faces:=true)
 
 The page's Start works from off: it powers the laps launch on for the active room, waits until
 the robot has found itself on the map, then starts the laps.
 
 PanelApp holds that state and answers the HTTP API (make_server); the ROS side is passed in
 as a `bridge` (web_panel.RosBridge on the robot, a fake one in the tests) with
-send_command(cmd, target='laps'|'explore'), click(x, y) and snapshot(kind) -> dict.
+send_command(cmd, target='laps'|'explore'), click(x, y) and snapshot(kind) -> dict, and
+optionally power() -> dict | None, tamper() -> (state, reason) | None, faces() -> dict | None
+and tamper_command('clear').
 """
 import glob
 import json
@@ -42,9 +50,11 @@ import numpy as np
 import yaml
 
 from securebot_ros import nopass as npz
+from securebot_ros import power_logic as pl
 from securebot_ros import room_store as rs
+from securebot_ros.web_alerts import AlertStore
 from securebot_ros.web_camera import CameraFeed
-from securebot_ros.web_faces import FaceEnroller, camera_in_use
+from securebot_ros.web_faces import FaceEnroller, camera_in_use, read_json
 
 WS = os.path.expanduser('~/securebot_ws')
 MAPS_DIR = os.path.join(WS, 'maps')
@@ -60,6 +70,7 @@ MAX_NOPASS = 500              # lines per room (a sanity limit for what the page
 DELETED_DIR = 'deleted'       # maps/deleted/: where Delete moves a room's map files
 STATUS_FRESH = 3.0            # s: /laps/status older than this = laps node not answering
 STOP_GRACE = (20.0, 5.0)      # s after SIGINT, then after SIGTERM, before SIGKILL
+PANEL_SETTINGS = os.path.join(WS, 'config', 'panel.json')   # {"faces": bool}
 
 
 # ------------------------------------------------------------------------------ rooms, maps
@@ -122,12 +133,14 @@ def other_stack_running(ps_output):
 
 
 # ------------------------------------------------------------------------------ the stack
-def launch_command(yaml_path, room, port, home='', rounds=0, near=None):
+def launch_command(yaml_path, room, port, home='', rounds=0, near=None, faces=False):
     """The laps launch, as the panel runs it: no RViz, no Tk window, auto-localize (looking
-    near `near` (x, y) first: where the last run in this room ended)."""
+    near `near` (x, y) first: where the last run in this room ended), face recognition
+    alongside when `faces`."""
     cmd = ['ros2', 'launch', 'securebot_ros', 'securebot_laps.launch.py',
            f'map:={yaml_path}', f'room:={room}', f'esp32_port:={port}',
-           'rviz:=false', 'panel:=web', 'auto_localize:=true', f'rounds:={int(rounds)}']
+           'rviz:=false', 'panel:=web', 'auto_localize:=true', f'rounds:={int(rounds)}',
+           f'faces:={"true" if faces else "false"}']
     if home:
         cmd.append(f'home:={home}')
     if near is not None:
@@ -135,12 +148,12 @@ def launch_command(yaml_path, room, port, home='', rounds=0, near=None):
     return cmd
 
 
-def explore_command(room, port):
+def explore_command(room, port, faces=False):
     """The explore launch, as the panel runs it: no RViz, no Tk windows; it saves the map as
     `room` when the room is scanned or Stop is pressed."""
     return ['ros2', 'launch', 'securebot_ros', 'securebot_explore.launch.py',
             f'room:={room}', f'esp32_port:={port}', 'rviz:=false', 'panel:=web',
-            'rooms:=false']
+            'rooms:=false', f'faces:={"true" if faces else "false"}']
 
 
 def last_pose(runs_dir, room):
@@ -208,7 +221,7 @@ class StackManager:
         self._loc_path, self._loc_offset, self._loc = None, 0, (None, '')
 
     def start(self, room, yaml_path, port, home='', rounds=0, name=None, near=None,
-              kind='laps'):
+              kind='laps', faces=False):
         """Start the laps launch for `room` (kind 'laps') or map it (kind 'explore':
         yaml_path unused, the map is saved as `room`)."""
         with self.lock:
@@ -221,8 +234,8 @@ class StackManager:
             with open(os.path.join(self.runs_dir, f'meta_{self.run_name}.json'), 'w') as f:
                 json.dump({'room': room, 'map': yaml_path, 'kind': kind}, f)
             prune_runs(self.runs_dir)             # the new run is the newest: it is kept
-            cmd = explore_command(room, port) if kind == 'explore' else \
-                launch_command(yaml_path, room, port, home, rounds, near)
+            cmd = explore_command(room, port, faces) if kind == 'explore' else \
+                launch_command(yaml_path, room, port, home, rounds, near, faces)
             self.proc = self.popen(cmd, stdout=self.log_file, stderr=subprocess.STDOUT,
                                    stdin=subprocess.DEVNULL, start_new_session=True)
             self.recorder = None
@@ -454,8 +467,13 @@ class PanelApp:
 
     def __init__(self, bridge, stack=None, maps_dir=MAPS_DIR, runs_dir=RUNS_DIR,
                  tools_dir=TOOLS_DIR, ports=serial_ports, ps=None, clock=time.monotonic,
-                 spawn=None, faces=None, camera=None):
+                 spawn=None, faces=None, camera=None, alerts=None,
+                 power_file=pl.SETTINGS_FILE, settings_file=PANEL_SETTINGS):
         self.bridge, self.maps_dir, self.runs_dir = bridge, maps_dir, runs_dir
+        self.alerts = alerts or AlertStore()
+        self.power_file, self.settings_file = power_file, settings_file
+        self.tamper_lock = threading.Lock()
+        self.tamper_seen = 'unavailable'     # last /tamper state (for the tripped edge)
         self.faces = faces or FaceEnroller()
         self.tools_dir = tools_dir
         self.stack = stack or StackManager(runs_dir, tools_dir)
@@ -506,7 +524,8 @@ class PanelApp:
             raise ValueError('Rounds must be 0 (until Stop) or more')
         port = self._ready_to_power_on()
         near = last_pose(self.stack.runs_dir, room['name'])
-        self.stack.start(room['name'], room['yaml'], port, home, rounds, near=near)
+        self.stack.start(room['name'], room['yaml'], port, home, rounds, near=near,
+                         faces=self.settings()['faces'])
         self.active = room['name']
         self.pending_start, self.note = False, ''
         return f'Starting up in {room["name"]}'
@@ -514,6 +533,7 @@ class PanelApp:
     def start(self, room_name=''):
         """The Start button. Off: power on for the room (default: the active one) and start
         the laps once the robot has found itself. On: start (laps or exploring)."""
+        self.check_can_drive()
         st = self.stack.state
         if st == 'stopping':
             raise RuntimeError('The robot software is shutting down; wait a moment')
@@ -545,7 +565,7 @@ class PanelApp:
             raise RuntimeError(f'A room called "{name}" already exists: pick another name '
                                'or delete it first')
         port = self._ready_to_power_on()
-        self.stack.start(name, '', port, kind='explore')
+        self.stack.start(name, '', port, kind='explore', faces=self.settings()['faces'])
         self.active = name
         self.pending_start, self.note = False, ''
         return (f'Starting up to map {name}. Put the robot in the room, then press Start; '
@@ -661,6 +681,8 @@ class PanelApp:
             raise ValueError(f'Unknown command "{cmd}"')
         if cmd == 'stop':
             self.pending_start, self.note = False, ''
+        else:
+            self.check_can_drive(home=cmd == 'home')
         if self.stack.state not in ('running', 'starting'):
             if cmd == 'stop':
                 return 'The robot software is off: nothing is moving'
@@ -708,6 +730,87 @@ class PanelApp:
         self.spawn(run)
         return 'Re-localizing (the robot stays still)'
 
+    # battery, tamper, settings -------------------------------------------------------------
+    def settings(self):
+        """Panel settings: {'faces': run face recognition during laps / mapping}."""
+        data = read_json(self.settings_file)
+        return {'faces': bool(data.get('faces', False)) if isinstance(data, dict) else False}
+
+    def set_faces(self, on):
+        os.makedirs(os.path.dirname(self.settings_file), exist_ok=True)
+        with open(self.settings_file + '.tmp', 'w') as f:
+            json.dump({**self.settings(), 'faces': bool(on)}, f)
+        os.replace(self.settings_file + '.tmp', self.settings_file)
+        running = self.stack.state in ('starting', 'running')
+        return ('Face recognition ' + ('on' if on else 'off')
+                + (' from the next Power on' if running else ' during laps and mapping'))
+
+    def power(self):
+        """The guard node's battery status (pct None: no reading), or None when it is not
+        running."""
+        get = getattr(self.bridge, 'power', None)
+        return get() if get else None
+
+    def tamper(self):
+        """(state, reason) from the ESP32, or ('unavailable', '') when nothing reports."""
+        get = getattr(self.bridge, 'tamper', None)
+        return (get() if get else None) or ('unavailable', '')
+
+    def check_can_drive(self, home=False):
+        """RuntimeError when the robot must not start driving: tampered with (until the
+        alert is acknowledged) or, for Start, a low battery."""
+        state, reason = self.tamper()
+        if state == 'tripped':
+            raise RuntimeError(f'The robot was {pl.tamper_text(reason)}: acknowledge the alert '
+                               'first (the motors stay off until then)')
+        power = self.power()
+        if not home and power and power.get('low'):
+            raise RuntimeError(f'Battery low ({power["pct"]:.0f} %, returns home at '
+                               f'{power["return_home_pct"]} %): charge it first')
+
+    def power_settings(self):
+        return pl.load_settings(self.power_file)
+
+    def set_power_settings(self, changes):
+        if not isinstance(changes, dict):
+            raise ValueError('Expected settings')
+        new = {**self.power_settings(),
+               **{k: changes[k] for k in pl.DEFAULTS if k in changes}}
+        saved = pl.save_settings(new, self.power_file)
+        return f'Returns home at {saved["return_home_pct"]} % ({saved["cells"]}S pack)'
+
+    def tamper_event(self, state, reason):
+        """Every /tamper message (ROS thread). A new 'tripped' becomes an alert with a
+        snapshot (taken in the background: the camera may need a moment to start)."""
+        with self.tamper_lock:
+            new_trip = state == 'tripped' and self.tamper_seen != 'tripped'
+            self.tamper_seen = state
+        if not new_trip:
+            return
+        self.pending_start, self.note = False, ''
+
+        def record():
+            jpeg = None
+            try:
+                jpeg = self.camera.snapshot()
+            except Exception:
+                pass
+            self.alerts.add('tamper', reason,
+                            f'Robot {pl.tamper_text(reason)}: motors stopped', jpeg)
+        self.spawn(record)
+
+    def ack_alert(self, alert_id=''):
+        """Acknowledge one alert (or all); if the robot is still in its tamper alarm, let the
+        motors run again."""
+        n = self.alerts.ack(alert_id or None)
+        state, _ = self.tamper()
+        if state == 'tripped':
+            send = getattr(self.bridge, 'tamper_command', None)
+            if send:
+                send('clear')
+            return 'Acknowledged: the motors are enabled again (press Start to continue)'
+        return 'Acknowledged' if n else 'Nothing to acknowledge'
+
     # state ---------------------------------------------------------------------------------
     def state(self):
         stack_state = self.stack.poll()
@@ -740,7 +843,11 @@ class PanelApp:
             'active': self.active_room(),
             'pending_start': self.pending_start,
             'note': self.note,
-            'battery': None,              # no battery sensor yet (a hardware job)
+            'battery': self.power(),
+            'tamper': dict(zip(('state', 'reason'), self.tamper())),
+            'alerts': self.alerts.unacked()[:5],
+            'settings': self.settings(),
+            'face_live': (getattr(self.bridge, 'faces', None) or (lambda: None))(),
             'camera': self.camera.state(),
             'live_map': robot.get('live_map'),
             'laps': status if fresh and kind == 'laps' else None,
@@ -818,6 +925,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, list_runs(self.app.runs_dir, limit=KEEP_LOGS))
             if url.path == '/api/maps':
                 return self._send(200, self.app.maps())
+            if url.path == '/api/alerts':
+                return self._send(200, self.app.alerts.list(20))
+            if url.path == '/api/alerts/snapshot.jpg':
+                return self._send(200, self.app.alerts.snapshot(q.get('id', [''])[0]),
+                                  'image/jpeg')
+            if url.path == '/api/power/settings':
+                return self._send(200, self.app.power_settings())
             if url.path == '/api/nopass':
                 return self._send(200, self.app.nopass_lines(q.get('room', [''])[0]))
             if url.path == '/api/live_map.png':
@@ -872,6 +986,12 @@ class Handler(BaseHTTPRequestHandler):
                 text = self.app.rename_room(str(body.get('old', '')), str(body.get('new', '')))
             elif path == '/api/maps/delete':
                 text = self.app.delete_room(str(body.get('name', '')))
+            elif path == '/api/alerts/ack':
+                text = self.app.ack_alert(str(body.get('id', '') or ''))
+            elif path == '/api/power/settings':
+                text = self.app.set_power_settings(body)
+            elif path == '/api/settings/faces':
+                text = self.app.set_faces(bool(body.get('on')))
             elif path == '/api/maps/add':
                 text = self.app.explore(str(body.get('name', '')))
             elif path == '/api/nopass':

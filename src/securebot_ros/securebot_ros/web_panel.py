@@ -11,9 +11,11 @@ explore launch (web_logic.StackManager).
 Anyone who can reach the port can drive the robot and enroll faces (add themselves as
 authorized): use --host 127.0.0.1 off a trusted network.
 
-This file is the ROS side (RosBridge: /laps/command, /explore/command, /clicked_point out;
-/laps/status, /explore/status, /laps/path, /laps/current, /laps/debris, /laps/home, /map
-(while exploring), /esp32/status, TF map -> base_link in); the rest is in web_logic.py.
+This file is the ROS side (RosBridge: /laps/command, /explore/command, /clicked_point,
+/tamper/command out; /laps/status, /explore/status, /laps/path, /laps/current, /laps/debris,
+/laps/home, /map (while exploring), /esp32/status, /power/status (guard_node), /tamper,
+/face_status and /recognized_name (live face node), TF map -> base_link in); the rest is in
+web_logic.py.
 """
 import argparse
 import json
@@ -32,7 +34,10 @@ from std_msgs.msg import String
 from tf2_ros import Buffer, TransformListener
 from visualization_msgs.msg import MarkerArray
 
+from securebot_ros import power_logic as pl
 from securebot_ros import web_logic as wl
+
+FRESH_S = 3.0           # s: older guard / tamper / face messages = that node is not running
 
 
 def yaw_of(q):
@@ -49,6 +54,13 @@ class RosBridge(Node):
         self.cmd_pub = {'laps': self.create_publisher(String, '/laps/command', 10),
                         'explore': self.create_publisher(String, '/explore/command', 10)}
         self.click_pub = self.create_publisher(PointStamped, '/clicked_point', 10)
+        self.tamper_pub = self.create_publisher(String, '/tamper/command', 10)
+        self.tamper_hook = None           # fn(state, reason) per /tamper message (PanelApp)
+        self.create_subscription(String, '/power/status', self.on_power, 10)
+        self.create_subscription(String, '/tamper', self.on_tamper, 10)
+        self.create_subscription(String, '/face_status', lambda m: self.on_face('status', m), 10)
+        self.create_subscription(String, '/recognized_name',
+                                 lambda m: self.on_face('names', m), 10)
         self.create_subscription(String, '/laps/status', lambda m: self.on_status('laps', m), 10)
         self.create_subscription(String, '/explore/status',
                                  lambda m: self.on_status('explore', m), 10)
@@ -69,6 +81,8 @@ class RosBridge(Node):
             self.pose = self.home = self.esp32 = None
             self.path, self.current, self.boxes = [], [], []
             self.grid, self.grid_version, self.png = None, 0, (0, None)
+            self.power_status = self.tamper_status = None     # (value, monotonic time)
+            self.face = {}                                     # 'status'/'names' -> (text, t)
 
     # in --------------------------------------------------------------------------------------
     def on_status(self, kind, msg):
@@ -102,6 +116,52 @@ class RosBridge(Node):
         with self.lock:
             self.png = (version, png)
         return png
+
+    def on_power(self, msg):
+        try:
+            status = json.loads(msg.data)
+        except ValueError:
+            return
+        with self.lock:
+            self.power_status = (status, time.monotonic())
+
+    def on_tamper(self, msg):
+        parsed = pl.parse_tamper(msg.data)
+        if parsed is None:
+            return
+        with self.lock:
+            self.tamper_status = (parsed, time.monotonic())
+        if self.tamper_hook:
+            self.tamper_hook(*parsed)
+
+    def on_face(self, which, msg):
+        with self.lock:
+            self.face[which] = (msg.data, time.monotonic())
+
+    def power(self):
+        with self.lock:
+            v = self.power_status
+        return v[0] if v and time.monotonic() - v[1] < FRESH_S else None
+
+    def tamper(self):
+        with self.lock:
+            v = self.tamper_status
+        return v[0] if v and time.monotonic() - v[1] < FRESH_S else None
+
+    def faces(self):
+        """{'status': AUTHORIZED | UNAUTHORIZED | SCANNING | NO_PERSON, 'names': ...} while the
+        live face node runs, else None."""
+        now = time.monotonic()
+        with self.lock:
+            fresh = {k: v for k, (v, t) in self.face.items() if now - t < FRESH_S}
+        return {'status': fresh['status'], 'names': fresh.get('names', '')} \
+            if 'status' in fresh else None
+
+    def tamper_command(self, cmd):
+        for _ in range(3):
+            self.tamper_pub.publish(String(data=cmd))
+            time.sleep(0.05)
+        self.get_logger().info(f'tamper: {cmd}')
 
     def on_esp32(self, msg):
         with self.lock:
@@ -175,6 +235,7 @@ def main(args=None):
     rclpy.init(args=ros_args)
     bridge = RosBridge()
     app = wl.PanelApp(bridge)
+    bridge.tamper_hook = app.tamper_event
     server = wl.make_server(app, opts.host, opts.port, static_dir())
     threading.Thread(target=server.serve_forever, daemon=True).start()
     log = bridge.get_logger()

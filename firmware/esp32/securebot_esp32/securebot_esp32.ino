@@ -1,4 +1,4 @@
-// SecureBot ESP32 low-level controller, firmware 2.0
+// SecureBot ESP32 low-level controller, firmware 2.2
 //
 // Serial protocol, 115200 baud, newline-terminated.
 //
@@ -10,6 +10,8 @@
 //   speed <0-MAX_PWM>  PWM used by the legacy commands
 //   freq <Hz>          motor PWM frequency, MIN_PWM_FREQ_HZ..MAX_PWM_FREQ_HZ, until reboot
 //                      (for tuning; not a heartbeat)
+//   tamper on | tamper off   arm / disarm tamper detection (not a heartbeat; off at boot)
+//   tamper clear             acknowledge a tamper alarm: motors may run again (stays armed)
 //
 // ESP32 -> Jetson
 //   U,<left_ft>,<right_ft>   every TELEMETRY_MS; -1 means "no reading"
@@ -18,6 +20,10 @@
 //   W,<left_ticks>,<right_ticks> every IMU_TELEMETRY_MS: wheel encoder counts since boot
 //                                (quadrature, both edges of both channels; + = that wheel forward)
 //                                (yaw: gyro Z integrated since boot, CCW positive, -180..180)
+//   B,<mV>,<mA>  every POWER_PERIOD_MS: battery pack voltage and current (+ = discharging)
+//                from the INA226, if it answered at boot
+//   T,<state>[,<reason>]  every STATUS_MS and at once on a change: off | armed |
+//                tripped,<tilt|lift> | unavailable (no accelerometer)
 //   I,<text>   information     E,<text>   error / safety event
 //
 // Safety:
@@ -26,6 +32,9 @@
 //     the Jetson must resend its command at least every ~200 ms.
 //   * Net-forward motion from M,l,r is blocked while an ultrasonic sensor sees an
 //     obstacle inside STOP_DISTANCE_FEET (rotating in place and reversing still work).
+//   * Tamper: while armed, the robot tipped past TAMPER_TILT_DEG or lifted (vertical
+//     acceleration off by TAMPER_LIFT_G) stops the motors at once and keeps them stopped,
+//     whatever is commanded, until "tamper clear".
 #include <Arduino.h>
 #include <Wire.h>
 
@@ -89,6 +98,14 @@ const bool RIGHT_ENCODER_REVERSED = true;
 const int IMU_SDA = 21;
 const int IMU_SCL = 22;
 
+// Battery monitor: INA226 on the same I2C bus (SDA 21 / SCL 22), A0 = A1 = GND -> 0x40, its
+// IN+ to the battery + and IN- to the robot's supply (high side). The 24 V pack can read up
+// to ~29.4 V, over the INA219's 26 V limit: use the INA226 (36 V).
+// SHUNT_OHMS must match the shunt resistor on the module: "R100" = 0.1 ohm (most INA226
+// boards; only up to ~0.8 A, too little for the motors), "R010" = 0.01 ohm (up to ~8 A).
+const uint8_t INA226_ADDR = 0x40;
+const float SHUNT_OHMS = 0.01;
+
 // ==================== SETTINGS ====================
 // Motor PWM: 10-bit duty (0-1023) at 10 kHz. Chosen with tools/motor_tune.py on the floor
 // (2026-10-26): the robot needs ~650 to start from standstill (at 500 it needed a push).
@@ -126,6 +143,22 @@ const int IMU_MAX_FAILS = 20;                    // consecutive bad reads -> IMU
 const unsigned long IMU_STILL_MS = 1000;         // motors off this long -> refine the bias
 const float IMU_STILL_DPS = 1.0;                 // ... while the gyro reads below this
 const float IMU_BIAS_RATE = 0.002;               // bias update per sample when still
+
+const unsigned long POWER_PERIOD_MS = 500;       // B line at 2 Hz
+
+// Tamper detection with the MPU-6050's accelerometer (+/-2 g). "Down" is measured at boot
+// with the robot standing (any board orientation works). Tipped: the filtered acceleration
+// points more than TAMPER_TILT_DEG away from "down" for TAMPER_TILT_MS. Lifted: the size of
+// the filtered acceleration is off 1 g by more than TAMPER_LIFT_G (picked up: >1 g, then
+// dropped or swung: <1 g) for TAMPER_LIFT_MS; tilting alone leaves it at 1 g. Driving bumps
+// are shorter than that.
+const float ACCEL_LSB_PER_G = 16384.0;
+const unsigned long ACCEL_PERIOD_MS = 10;        // 100 Hz
+const float ACCEL_TAU_MS = 60.0;                 // low-pass filter time constant
+const float TAMPER_TILT_DEG = 35.0;
+const unsigned long TAMPER_TILT_MS = 300;
+const float TAMPER_LIFT_G = 0.30;
+const unsigned long TAMPER_LIFT_MS = 150;
 
 // Wheel speed control (V command). Measured 2026-11-22 (DRV8262, robot on the floor): a wheel
 // at rest needs ~550 PWM to break free, but once rolling it needs far less: ~230 + 0.75 PWM per
@@ -194,6 +227,20 @@ unsigned long lastImuUs = 0;
 unsigned long lastImuTelemetryMs = 0;
 unsigned long motorsStillSinceMs = 0;
 
+bool wireStarted = false;          // I2C bus up (the IMU's wires are there)
+bool powerOk = false;              // INA226 answered at boot
+unsigned long lastPowerMs = 0;
+
+bool accelOk = false;              // accelerometer works and "down" is known
+float gravity[3] = {0, 0, 1};      // unit vector "down" in the board frame, from boot
+float accelF[3] = {0, 0, 1};       // filtered acceleration, g
+unsigned long lastAccelMs = 0;
+bool tamperArmed = false;
+bool tamperTripped = false;
+const char *tamperReason = "";
+unsigned long tiltSinceMs = 0;     // 0 = not tilted
+unsigned long liftSinceMs = 0;     // 0 = not lifted
+
 volatile long leftTicks = 0;
 volatile long rightTicks = 0;
 volatile uint8_t leftEncState = 0;
@@ -229,6 +276,15 @@ void printI2cScan();
 void updateImu();
 bool imuWrite(uint8_t reg, uint8_t value);
 bool imuReadGyroZ(int16_t &raw);
+bool imuReadAccel(float a[3]);
+void setupAccel();
+void updateTamper();
+void tripTamper(const char *reason);
+void sendTamper();
+void setupPowerMonitor();
+bool inaRead(uint8_t reg, uint16_t &value);
+bool inaWrite(uint8_t reg, uint16_t value);
+void sendPower();
 float readUltrasonicFeet(int trigPin, int echoPin);
 bool validDistance(float distanceFeet);
 bool obstacleAhead();
@@ -254,8 +310,10 @@ void setup() {
   Serial.begin(115200);
   Serial.println("I,booting");     // before the IMU: a stuck I2C bus shows up as silence after it
   setupImu();                      // motors are already stopped: safe to calibrate
+  setupAccel();
+  setupPowerMonitor();
   setupEncoders();
-  Serial.println("I,SecureBot ESP32 fw 2.1 ready");
+  Serial.println("I,SecureBot ESP32 fw 2.2 ready");
 }
 
 // ==================== LOOP ====================
@@ -264,6 +322,7 @@ void loop() {
   checkWatchdog();
   updateSensors();
   updateImu();
+  updateTamper();
   controlMotors();
   sendTelemetry();
   delay(1);
@@ -326,6 +385,22 @@ void handleCommand(char *cmd) {
     speedPWM = constrain(atoi(cmd + 6), 0, MAX_PWM);
     Serial.print("I,speed ");
     Serial.println(speedPWM);
+  } else if (strcmp(cmd, "tamper on") == 0) {
+    tamperArmed = true;
+    tiltSinceMs = liftSinceMs = 0;
+    sendTamper();
+    heartbeat = false;
+  } else if (strcmp(cmd, "tamper off") == 0) {
+    tamperArmed = false;
+    tamperTripped = false;
+    sendTamper();
+    heartbeat = false;
+  } else if (strcmp(cmd, "tamper clear") == 0) {
+    if (tamperTripped) Serial.println("I,tamper alarm cleared");
+    tamperTripped = false;
+    tiltSinceMs = liftSinceMs = 0;
+    sendTamper();
+    heartbeat = false;
   } else if (strcmp(cmd, "encscope") == 0) {
     encoderScope();                           // diagnostic: stops the motors, takes ~3 s
   } else if (strncmp(cmd, "freq ", 5) == 0) {
@@ -543,6 +618,7 @@ void setupImu() {
   Wire.begin(IMU_SDA, IMU_SCL);
   Wire.setClock(100000);                     // standard speed: robust on longer wires
   Wire.setTimeOut(10);                       // ms: a stuck bus must not stall the boot
+  wireStarted = true;
   // After a power-on the MPU-6050 needs up to ~100 ms before it answers: keep trying ~1 s.
   bool found = false;
   for (int attempt = 0; attempt < 20 && !found; attempt++) {
@@ -734,6 +810,11 @@ void encoderScope() {
 void controlMotors() {
   int left = 0;
   int right = 0;
+
+  if (tamperTripped) {                     // stays stopped until "tamper clear"
+    applyMotors(0, 0);
+    return;
+  }
 
   switch (mode) {
     case MODE_STOP:
@@ -971,8 +1052,14 @@ void sendTelemetry() {
     Serial.println(right);
   }
 
+  if (powerOk && now - lastPowerMs >= POWER_PERIOD_MS) {
+    lastPowerMs = now;
+    sendPower();
+  }
+
   if (now - lastStatusMs >= STATUS_MS) {
     lastStatusMs = now;
+    sendTamper();
     Serial.print("S,");
     Serial.print(MODE_NAMES[mode]);
     Serial.print(",");
@@ -982,4 +1069,152 @@ void sendTelemetry() {
     Serial.print(",");
     Serial.println(avoidState);
   }
+}
+
+// ==================== TAMPER (MPU-6050 accelerometer) ====================
+bool imuReadAccel(float a[3]) {
+  Wire.beginTransmission(imuAddr);
+  Wire.write(0x3B);                          // ACCEL_XOUT_H .. ACCEL_ZOUT_L
+  if (Wire.endTransmission(false) != 0) return false;
+  if (Wire.requestFrom((int)imuAddr, 6) != 6) return false;
+  for (int i = 0; i < 3; i++) {
+    int hi = Wire.read();
+    int lo = Wire.read();
+    a[i] = (int16_t)((hi << 8) | lo) / ACCEL_LSB_PER_G;
+  }
+  return true;
+}
+
+// Measure "down" with the robot standing (right after the gyro calibration, which already
+// made sure it is still). Without it tamper detection is unavailable.
+void setupAccel() {
+  if (!imuOk) return;
+  float sum[3] = {0, 0, 0};
+  int good = 0;
+  for (int i = 0; i < 50; i++) {
+    float a[3];
+    if (imuReadAccel(a)) {
+      for (int k = 0; k < 3; k++) sum[k] += a[k];
+      good++;
+    }
+    delay(2);
+  }
+  float n = good ? sqrtf(sum[0] * sum[0] + sum[1] * sum[1] + sum[2] * sum[2]) / good : 0;
+  if (good < 25 || n < 0.7f || n > 1.3f) {
+    Serial.println("E,accelerometer not usable: tamper detection unavailable");
+    return;
+  }
+  for (int k = 0; k < 3; k++) {
+    gravity[k] = sum[k] / good / n;
+    accelF[k] = gravity[k];
+  }
+  accelOk = true;
+  lastAccelMs = millis();
+  Serial.println("I,accelerometer ready (tamper detection: send \"tamper on\")");
+}
+
+void updateTamper() {
+  if (!accelOk || !imuOk) return;
+  unsigned long now = millis();
+  if (now - lastAccelMs < ACCEL_PERIOD_MS) return;
+  float k = (now - lastAccelMs) / (ACCEL_TAU_MS + (now - lastAccelMs));
+  lastAccelMs = now;
+  float a[3];
+  if (!imuReadAccel(a)) return;              // the gyro side counts I2C failures
+  for (int i = 0; i < 3; i++) accelF[i] += k * (a[i] - accelF[i]);
+  if (!tamperArmed || tamperTripped) return;
+
+  float down = accelF[0] * gravity[0] + accelF[1] * gravity[1] + accelF[2] * gravity[2];
+  float mag = sqrtf(accelF[0] * accelF[0] + accelF[1] * accelF[1] + accelF[2] * accelF[2]);
+  float cosTilt = mag > 0.2f ? down / mag : 1.0f;
+  bool tilted = cosTilt < cosf(TAMPER_TILT_DEG * (float)M_PI / 180.0f);
+  bool lifted = fabsf(mag - 1.0f) > TAMPER_LIFT_G;     // tilting alone keeps 1 g
+
+  if (!tilted) tiltSinceMs = 0;
+  else if (tiltSinceMs == 0) tiltSinceMs = now;
+  if (!lifted) liftSinceMs = 0;
+  else if (liftSinceMs == 0) liftSinceMs = now;
+
+  if (tiltSinceMs && now - tiltSinceMs >= TAMPER_TILT_MS) tripTamper("tilt");
+  else if (liftSinceMs && now - liftSinceMs >= TAMPER_LIFT_MS) tripTamper("lift");
+}
+
+void tripTamper(const char *reason) {
+  tamperTripped = true;
+  tamperReason = reason;
+  setMode(MODE_STOP);
+  applyMotors(0, 0);
+  Serial.print("E,TAMPER: ");
+  Serial.println(reason);
+  sendTamper();
+}
+
+void sendTamper() {
+  if (!accelOk || !imuOk) {               // no accelerometer, or the IMU stopped answering
+    Serial.println("T,unavailable");
+  } else if (tamperTripped) {
+    Serial.print("T,tripped,");
+    Serial.println(tamperReason);
+  } else {
+    Serial.println(tamperArmed ? "T,armed" : "T,off");
+  }
+}
+
+// ==================== BATTERY (INA226) ====================
+bool inaWrite(uint8_t reg, uint16_t value) {
+  Wire.beginTransmission(INA226_ADDR);
+  Wire.write(reg);
+  Wire.write((uint8_t)(value >> 8));
+  Wire.write((uint8_t)(value & 0xFF));
+  return Wire.endTransmission() == 0;
+}
+
+bool inaRead(uint8_t reg, uint16_t &value) {
+  Wire.beginTransmission(INA226_ADDR);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) return false;
+  if (Wire.requestFrom((int)INA226_ADDR, 2) != 2) return false;
+  int hi = Wire.read();
+  int lo = Wire.read();
+  value = (uint16_t)((hi << 8) | lo);
+  return true;
+}
+
+void setupPowerMonitor() {
+  if (!wireStarted) {                        // the IMU part did not start the bus
+    int sda, scl;
+    imuWireCheck(sda, scl);
+    if (!sda || !scl) {
+      Serial.println("E,power monitor not found (INA226 on SDA 21 / SCL 22: no I2C wires)");
+      return;
+    }
+    Wire.begin(IMU_SDA, IMU_SCL);
+    Wire.setClock(100000);
+    Wire.setTimeOut(10);
+    wireStarted = true;
+  }
+  uint16_t id = 0;
+  if (!inaRead(0xFE, id) || id != 0x5449) {  // manufacturer ID "TI"
+    Serial.println("E,power monitor not found (INA226 at 0x40): battery level unknown");
+    return;
+  }
+  // CONFIG: average 16 samples, 1.1 ms bus and shunt conversions, continuous: a new value
+  // every ~35 ms, smooth enough for the motors' PWM ripple
+  if (!inaWrite(0x00, 0x4527)) {
+    Serial.println("E,power monitor did not accept its settings: battery level unknown");
+    return;
+  }
+  powerOk = true;
+  Serial.println("I,power monitor ready (INA226)");
+}
+
+void sendPower() {
+  uint16_t bus, shunt;
+  if (!inaRead(0x02, bus) || !inaRead(0x01, shunt)) return;
+  long mv = lroundf(bus * 1.25f);                                  // 1.25 mV per bit
+  long ma = lroundf((int16_t)shunt * 2.5e-3f / SHUNT_OHMS);       // 2.5 uV per bit
+  Serial.print("B,");
+  Serial.print(mv);
+  Serial.print(",");
+  Serial.println(ma);
 }

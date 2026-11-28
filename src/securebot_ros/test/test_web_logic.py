@@ -14,6 +14,7 @@ import cv2
 import pytest
 
 from securebot_ros import web_logic as wl
+from securebot_ros.web_alerts import AlertStore
 from securebot_ros.web_faces import FaceEnroller
 
 LIDAR = wl.LIDAR_PORT
@@ -104,6 +105,21 @@ class FakeBridge:
         self.kind = kind
         return dict(self.snap)
 
+    # guard node / ESP32 tamper / live face node (None: not running)
+    power_status = tamper_status = face_status = None
+
+    def power(self):
+        return self.power_status
+
+    def tamper(self):
+        return self.tamper_status
+
+    def faces(self):
+        return self.face_status
+
+    def tamper_command(self, cmd):
+        self.sent.append(f'tamper:{cmd}')
+
 
 class FakeCamera:
     def __init__(self):
@@ -117,6 +133,19 @@ class FakeCamera:
     def state(self):
         return {'on': bool(self.jpg), 'error': ''}
 
+    def snapshot(self):
+        return self.jpg
+
+
+def ticking_clock(start=1764280800.0):
+    """A wall clock that moves 1 s per reading (alerts get distinct ids)."""
+    t = [start - 1.0]
+
+    def clock():
+        t[0] += 1.0
+        return t[0]
+    return clock
+
 
 def app_for(tmp_path, maps, fos, ports=(LIDAR, ESP), ps=''):
     bridge = FakeBridge()
@@ -125,7 +154,10 @@ def app_for(tmp_path, maps, fos, ports=(LIDAR, ESP), ps=''):
     app = wl.PanelApp(bridge, stack=stack_for(tmp_path, fos), maps_dir=maps,
                       runs_dir=str(tmp_path / 'runs'), tools_dir=str(tmp_path / 'tools'),
                       ports=lambda: list(ports), ps=lambda: ps, spawn=lambda f: f(),
-                      faces=faces, camera=FakeCamera())
+                      faces=faces, camera=FakeCamera(),
+                      alerts=AlertStore(str(tmp_path / 'alerts'), clock=ticking_clock()),
+                      power_file=str(tmp_path / 'config' / 'power.json'),
+                      settings_file=str(tmp_path / 'config' / 'panel.json'))
     return app, bridge
 
 
@@ -852,3 +884,144 @@ def test_http_faces_manage(server, tmp_path):
     app.faces.job['proc'].end(0)                     # no photos taken -> capture over
     assert call(base + '/api/faces/delete_person', {'name': 'Ana'})[0] == 200
     assert not d.exists()
+
+
+# ------------------------------------------------------------------------------ guard
+def test_tamper_trip_records_one_alert_with_snapshot(tmp_path, maps):
+    app, bridge = app_for(tmp_path, maps, FakeOS())
+    app.tamper_event('armed', '')
+    assert app.alerts.list() == []
+    bridge.tamper_status = ('tripped', 'lift')
+    app.tamper_event('tripped', 'lift')
+    app.tamper_event('tripped', 'lift')            # the ESP32 repeats it twice a second
+    alerts = app.alerts.list()
+    assert len(alerts) == 1
+    a = alerts[0]
+    assert a['kind'] == 'tamper' and a['reason'] == 'lift' and a['snapshot']
+    assert a['text'] == 'Robot lifted: motors stopped' and not a['acked']
+    assert a['time_text'].startswith('20')
+    assert app.alerts.snapshot(a['id']) == app.camera.jpg
+    s = app.state()
+    assert s['tamper'] == {'state': 'tripped', 'reason': 'lift'}
+    assert [x['id'] for x in s['alerts']] == [a['id']]
+
+
+def test_tamper_trip_without_a_camera_still_alerts(tmp_path, maps):
+    app, bridge = app_for(tmp_path, maps, FakeOS())
+    app.camera.jpg = None
+    app.tamper_event('tripped', 'tilt')
+    a = app.alerts.list()[0]
+    assert not a['snapshot'] and a['text'] == 'Robot tipped over: motors stopped'
+    with pytest.raises(ValueError):
+        app.alerts.snapshot(a['id'])
+
+
+def test_a_new_trip_after_clearing_is_a_new_alert(tmp_path, maps):
+    app, _ = app_for(tmp_path, maps, FakeOS())
+    app.tamper_event('tripped', 'tilt')
+    app.tamper_event('armed', '')
+    app.tamper_event('tripped', 'lift')
+    assert [a['reason'] for a in app.alerts.list()] == ['lift', 'tilt']
+
+
+def test_tampered_robot_refuses_to_drive_until_acknowledged(tmp_path, maps):
+    fos = FakeOS()
+    app, bridge = app_for(tmp_path, maps, fos)
+    app.power_on("Kumar's Lab")
+    bridge.tamper_status = ('tripped', 'tilt')
+    app.tamper_event('tripped', 'tilt')
+    with pytest.raises(RuntimeError, match='tipped over: acknowledge'):
+        app.start()
+    with pytest.raises(RuntimeError, match='acknowledge'):
+        app.command('home')
+    assert app.command('stop')                     # stopping is always allowed
+    assert 'enabled again' in app.ack_alert()
+    assert 'tamper:clear' in bridge.sent
+    assert app.alerts.unacked() == []
+    bridge.tamper_status = ('armed', '')
+    app.check_can_drive()                          # no error now
+    assert app.ack_alert() == 'Nothing to acknowledge'
+
+
+def test_ack_one_alert_by_id(tmp_path, maps):
+    app, bridge = app_for(tmp_path, maps, FakeOS())
+    app.tamper_event('tripped', 'tilt')
+    app.tamper_event('off', '')
+    app.tamper_event('tripped', 'lift')
+    first = app.alerts.list()[-1]['id']
+    assert app.ack_alert(first) == 'Acknowledged'
+    assert [a['reason'] for a in app.alerts.unacked()] == ['lift']
+    assert 'tamper:clear' not in bridge.sent       # not tripped any more: nothing to clear
+    with pytest.raises(ValueError):
+        app.ack_alert('19990101_000000_000')
+
+
+def test_low_battery_refuses_start_but_not_home(tmp_path, maps):
+    fos = FakeOS()
+    app, bridge = app_for(tmp_path, maps, fos)
+    bridge.power_status = {'pct': 17.6, 'volts': 22.1, 'amps': 0.8, 'low': True,
+                           'return_home_pct': 20, 'cells': 6}
+    with pytest.raises(RuntimeError, match=r'Battery low \(18 %, returns home at 20 %\)'):
+        app.start()
+    app.power_on("Kumar's Lab")
+    app.stack.mark_running()
+    assert app.command('home') == 'Going home'
+    assert app.state()['battery']['pct'] == 17.6
+    bridge.power_status['low'] = False
+    assert app.start()
+
+
+def test_power_settings_saved_and_checked(tmp_path, maps):
+    app, _ = app_for(tmp_path, maps, FakeOS())
+    assert app.power_settings()['return_home_pct'] == 20
+    assert app.set_power_settings({'return_home_pct': 30}) == 'Returns home at 30 % (6S pack)'
+    assert json.load(open(tmp_path / 'config' / 'power.json'))['return_home_pct'] == 30
+    with pytest.raises(ValueError):
+        app.set_power_settings({'return_home_pct': 95})
+    with pytest.raises(ValueError):
+        app.set_power_settings({'cells': 5})
+    assert app.power_settings()['return_home_pct'] == 30
+
+
+def test_faces_setting_goes_into_the_launch(tmp_path, maps):
+    fos = FakeOS()
+    app, _ = app_for(tmp_path, maps, fos)
+    assert app.settings() == {'faces': False}
+    app.power_on("Kumar's Lab")
+    assert 'faces:=false' in fos.procs[0].cmd
+    app.power_off()
+    assert 'next Power on' not in app.set_faces(True)
+    app.power_on("Kumar's Lab")
+    assert 'faces:=true' in fos.procs[-2].cmd
+    app.stack.mark_running()
+    assert 'next Power on' in app.set_faces(False)
+    assert wl.explore_command('Lib', '/dev/x', True)[-1] == 'faces:=true'
+
+
+def test_face_status_in_state(tmp_path, maps):
+    app, bridge = app_for(tmp_path, maps, FakeOS())
+    assert app.state()['face_live'] is None
+    bridge.face_status = {'status': 'AUTHORIZED', 'names': 'Ana'}
+    assert app.state()['face_live']['names'] == 'Ana'
+
+
+def test_http_alerts_and_power(server):
+    base, app, bridge = server
+    bridge.tamper_status = ('tripped', 'lift')
+    app.tamper_event('tripped', 'lift')
+    code, _, body = call(base + '/api/alerts')
+    alerts = json.loads(body)
+    assert code == 200 and len(alerts) == 1
+    code, ctype, body = call(base + '/api/alerts/snapshot.jpg?id=' + alerts[0]['id'])
+    assert code == 200 and ctype == 'image/jpeg' and body == app.camera.jpg
+    assert call(base + '/api/alerts/snapshot.jpg?id=../../etc/passwd')[0] == 404
+    code, _, body = call(base + '/api/start', {})
+    assert code == 409 and 'acknowledge' in json.loads(body)['error']
+    assert call(base + '/api/alerts/ack', {'id': alerts[0]['id']})[0] == 200
+    assert 'tamper:clear' in bridge.sent
+    code, _, body = call(base + '/api/power/settings')
+    assert json.loads(body)['return_home_pct'] == 20
+    assert call(base + '/api/power/settings', {'return_home_pct': 25})[0] == 200
+    assert call(base + '/api/power/settings', {'return_home_pct': 'x'})[0] == 400
+    assert call(base + '/api/settings/faces', {'on': True})[0] == 200
+    assert json.loads(call(base + '/api/state')[2])['settings'] == {'faces': True}

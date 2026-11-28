@@ -107,8 +107,54 @@
   .stage img { object-fit: contain; background: #000; }
   .stage .empty { position: absolute; inset: 0; display: grid; place-items: center;
                   color: var(--muted); text-align: center; padding: 20px; }
-  .bat { position: absolute; top: 10px; right: 10px; z-index: 2; }
+  .bat { position: absolute; top: 10px; right: 10px; z-index: 2; cursor: pointer; }
   .bat svg { width: 18px; height: 18px; stroke: var(--muted); }
+  .bat.ok { border-color: rgba(47, 183, 107, .5); } .bat.ok svg { stroke: var(--go); }
+  .bat.mid { border-color: rgba(245, 165, 36, .5); } .bat.mid svg { stroke: var(--warn); }
+  .bat.low { border-color: var(--stop); color: #ffb4b6; } .bat.low svg { stroke: var(--stop); }
+  .toggle { display: flex; align-items: center; gap: 10px; font-size: 14px; cursor: pointer;
+            padding: 4px 2px; user-select: none; }
+  .toggle input { appearance: none; width: 38px; height: 22px; border-radius: 999px; margin: 0;
+                  background: var(--panel2); border: 1px solid var(--line); position: relative;
+                  cursor: pointer; flex: none; transition: background .15s; }
+  .toggle input::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px;
+                         height: 16px; border-radius: 50%; background: var(--muted);
+                         transition: transform .15s, background .15s; }
+  .toggle input:checked { background: rgba(34, 195, 166, .25); border-color: var(--accent); }
+  .toggle input:checked::after { transform: translateX(16px); background: var(--accent); }
+  .toggle small { color: var(--muted); display: block; font-size: 12px; }
+
+  /* tamper alert: on every page until acknowledged */
+  .alertbar { display: flex; align-items: center; gap: 14px; padding: 12px; margin-bottom: 16px;
+              border-radius: var(--radius); background: rgba(229, 72, 77, .14);
+              border: 1px solid var(--stop); animation: alertpulse 1.6s ease-in-out infinite; }
+  @keyframes alertpulse { 50% { box-shadow: 0 0 0 4px rgba(229, 72, 77, .18); } }
+  .alertbar img { width: 120px; height: 90px; object-fit: cover; border-radius: 8px;
+                  background: #000; cursor: zoom-in; flex: none; }
+  .alertbar .noimg { width: 120px; height: 90px; border-radius: 8px; background: #000;
+                     display: grid; place-items: center; color: var(--muted); font-size: 12px;
+                     text-align: center; flex: none; }
+  .alertbar b { color: #ffb4b6; font-size: 16px; display: block; }
+  .alertbar .meta { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  .alertbar .acts { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+  @media (max-width: 620px) {
+    .alertbar { flex-wrap: wrap; }
+    .alertbar img, .alertbar .noimg { width: 96px; height: 72px; }
+    .alertbar .acts { width: 100%; }
+    .alertbar .acts .btn { flex: 1; }
+  }
+  ul.alerts { list-style: none; padding: 0; margin: 0; font-size: 14px; }
+  ul.alerts li { display: flex; gap: 12px; align-items: center; padding: 8px 0;
+                 border-top: 1px solid var(--line); }
+  ul.alerts li:first-child { border-top: 0; }
+  ul.alerts img { width: 72px; height: 54px; object-fit: cover; border-radius: 6px;
+                  cursor: zoom-in; background: #000; flex: none; }
+  ul.alerts .noimg { width: 72px; height: 54px; border-radius: 6px; background: #0a0f15; flex: none; }
+  ul.alerts .t { color: var(--muted); font-size: 13px; }
+  ul.alerts .new { color: #ffb4b6; font-weight: 650; }
+  #imgview { position: fixed; inset: 0; z-index: 70; background: rgba(0, 0, 0, .85);
+             display: grid; place-items: center; cursor: zoom-out; padding: 20px; }
+  #imgview img { max-width: 100%; max-height: 100%; border-radius: 8px; }
   .over-l { position: absolute; top: 10px; left: 10px; z-index: 2; max-width: 70%; }
   .viewbar { display: flex; align-items: center; gap: 8px; padding: 10px 12px; flex-wrap: wrap;
              border-top: 1px solid var(--line); }
@@ -278,6 +324,16 @@
 </nav>
 
 <main>
+  <div class="alertbar" id="alertbar" role="alert" hidden>
+    <img id="ab-img" alt="Webcam snapshot when it happened" hidden>
+    <div class="noimg" id="ab-noimg" hidden>No snapshot<br>(camera unavailable)</div>
+    <div class="grow"><b id="ab-title"></b><div class="meta" id="ab-meta"></div></div>
+    <div class="acts">
+      <button class="btn" id="ab-all">All alerts</button>
+      <button class="btn stop" id="ab-ack">Acknowledge</button>
+    </div>
+  </div>
+
   <!-- ================= Robot (main screen) ================= -->
   <section id="p-robot" class="robot">
     <aside class="card controls">
@@ -289,6 +345,9 @@
       <button class="btn" id="c-swap"><svg><use href="#i-swap"/></svg><span>Swap to camera</span></button>
       <button class="btn" id="c-reloc"><svg><use href="#i-target"/></svg>Manual re-localize</button>
       <button class="btn home" id="c-home"><svg><use href="#i-home"/></svg>Return home</button>
+      <label class="toggle" title="Runs live face recognition alongside the laps or mapping (from the next Power on)">
+        <input type="checkbox" id="c-faces"><span>Face recognition<small id="c-faces-sub">during laps and mapping</small></span>
+      </label>
       <hr>
       <div class="status">
         <div><span>Doing</span><span id="s-state">—</span></div>
@@ -296,6 +355,8 @@
         <div><span id="s-prog-k">Progress</span><span id="s-prog">—</span></div>
         <div><span>Position</span><span id="s-loc">—</span></div>
         <div><span>ESP32</span><span id="s-esp">—</span></div>
+        <div><span>Faces</span><span id="s-faces">—</span></div>
+        <div><span>Tamper</span><span id="s-tamper">—</span></div>
       </div>
       <div class="note" id="s-note"></div>
       <hr>
@@ -308,7 +369,7 @@
           <canvas id="maincanvas"></canvas>
           <img id="camimg" alt="Robot camera" hidden>
           <div class="empty" id="mainempty" hidden></div>
-          <span class="pill bat" id="bat" title="No battery sensor on the robot yet"><svg><use href="#i-bat"/></svg><span>—%</span></span>
+          <span class="pill bat" id="bat" role="button" tabindex="0" title="Battery: click to set the return-home level"><svg><use href="#i-bat"/></svg><span>—%</span></span>
           <span class="pill over-l" id="mode-pill" hidden></span>
         </div>
         <div class="viewbar">
@@ -337,6 +398,12 @@
           <pre id="log">No log yet.</pre>
           <ul class="runs" id="runs"></ul>
         </div>
+      </details>
+
+      <details class="card logs" id="alerts">
+        <summary><svg class="chev" width="16" height="16"><use href="#i-chev"/></svg>Alerts
+          <small id="alerts-sub">(tamper events)</small></summary>
+        <div class="inner"><ul class="alerts" id="alertlist"><li>No alerts.</li></ul></div>
       </details>
     </div>
   </section>
@@ -460,6 +527,7 @@
   <div class="row" id="md-buttons"></div>
 </div></div>
 <div id="toast" hidden></div>
+<div id="imgview" hidden><img alt="Snapshot"></div>
 
 <script>
 'use strict';
@@ -751,6 +819,7 @@ $('scrim').onclick = closeMenu;
 
 addEventListener('keydown', e => {
   if (e.key !== 'Escape') return;
+  if (!$('imgview').hidden) { $('imgview').hidden = true; return; }
   if (!$('modal').hidden) { if (modalDone) modalDone(); return; }
   if ($('drawer').classList.contains('open')) { closeMenu(); return; }
   if (!$('full').hidden) { e.preventDefault(); closeFull(); }
@@ -956,7 +1025,18 @@ function renderRobot() {
   if (!note && !exploring && loc.state === 'failed' && on) note = 'Could not find itself on the map: use Manual re-localize';
   $('s-note').textContent = note;
 
-  $('bat').querySelector('span').textContent = S.battery == null ? '—%' : `${Math.round(S.battery)}%`;
+  renderBattery();
+  if (document.activeElement !== $('c-faces')) $('c-faces').checked = !!S.settings.faces;
+  $('c-faces-sub').textContent = on && S.settings.faces !== !!S.face_live && st === 'running' ?
+    'changes at the next Power on' : 'during laps and mapping';
+  const fl = S.face_live;
+  $('s-faces').textContent = fl ? (fl.status.replace('_', ' ').toLowerCase() + (fl.names ? ` (${fl.names})` : '')) :
+    (on && S.settings.faces ? 'starting…' : 'off');
+  $('s-faces').style.color = fl && fl.status === 'UNAUTHORIZED' ? 'var(--stop)' : '';
+  const ts = S.tamper.state;
+  $('s-tamper').textContent = on ? (TAMPER[ts] || ts) : 'off';
+  $('s-tamper').style.color = ts === 'tripped' ? 'var(--stop)' : ts === 'armed' && on ? 'var(--go)' : '';
+  $('s-tamper').title = ts === 'unavailable' && on ? 'No accelerometer reading from the ESP32 (MPU-6050)' : '';
   $('mode-pill').hidden = !exploring;
   $('mode-pill').innerHTML = exploring ? `<i style="background:var(--warn)"></i>Mapping ${esc(S.active || '')}` : '';
   $('log').textContent = (S.stack.log || []).join('\n') || 'No log yet.';
@@ -979,6 +1059,118 @@ async function loadRuns() {
   } catch (e) {}
 }
 $('logs').addEventListener('toggle', () => { if ($('logs').open) loadRuns(); });
+
+// ---------------------------------------------------------------- battery, tamper alerts, faces
+const TAMPER = {off: 'Off', armed: 'Armed', tripped: 'TRIPPED', unavailable: 'Unavailable'};
+const snapUrl = a => '/api/alerts/snapshot.jpg?id=' + enc(a.id);
+function showImage(src) { $('imgview').querySelector('img').src = src; $('imgview').hidden = false; }
+$('imgview').onclick = () => { $('imgview').hidden = true; };
+
+let alertsSeen = null;              // newest unacknowledged alert id already announced
+function beep() {
+  try {
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    [0, 0.25, 0.5].forEach(t => {
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.frequency.value = 880; o.connect(g); g.connect(ac.destination);
+      g.gain.setValueAtTime(0.15, ac.currentTime + t);
+      g.gain.setValueAtTime(0, ac.currentTime + t + 0.15);
+      o.start(ac.currentTime + t); o.stop(ac.currentTime + t + 0.16);
+    });
+  } catch (e) { /* no audio: the banner is enough */ }
+}
+function renderAlert() {
+  const a = (S.alerts || [])[0];
+  $('alertbar').hidden = !a;
+  if (!a) { alertsSeen = null; return; }
+  if (alertsSeen !== a.id) {
+    alertsSeen = a.id;
+    beep();
+    $('ab-img').src = a.snapshot ? snapUrl(a) : '';
+    if ($('alerts').open) loadAlerts();
+  }
+  $('ab-img').hidden = !a.snapshot; $('ab-noimg').hidden = !!a.snapshot;
+  $('ab-title').textContent = a.text;
+  const more = S.alerts.length > 1 ? ` · ${S.alerts.length - 1} more unacknowledged` : '';
+  const still = S.tamper.state === 'tripped' ? ' · motors off until you acknowledge' : '';
+  $('ab-meta').textContent = a.time_text + still + more;
+  $('ab-ack').dataset.id = a.id;
+}
+$('ab-img').onclick = () => showImage($('ab-img').src);
+$('ab-ack').onclick = async () => {
+  const j = await act('/api/alerts/ack', {id: $('ab-ack').dataset.id});
+  if (j && $('alerts').open) loadAlerts();
+};
+$('ab-all').onclick = () => {
+  if (route.page !== 'robot') location.hash = '#/';
+  $('alerts').open = true;
+  setTimeout(() => $('alerts').scrollIntoView({behavior: 'smooth', block: 'start'}), 50);
+};
+async function loadAlerts() {
+  try {
+    const list = await api('/api/alerts');
+    const ul = $('alertlist'); ul.innerHTML = list.length ? '' : '<li>No alerts.</li>';
+    for (const a of list) {
+      const li = document.createElement('li');
+      li.innerHTML = (a.snapshot ? `<img src="${snapUrl(a)}" alt="Snapshot" loading="lazy">` : '<span class="noimg"></span>') +
+        `<div class="grow"><div class="${a.acked ? '' : 'new'}">${esc(a.text)}</div>` +
+        `<div class="t">${esc(a.time_text)}${a.acked ? ' · acknowledged' : ' · not acknowledged'}</div></div>`;
+      const img = li.querySelector('img');
+      if (img) img.onclick = () => showImage(img.src);
+      if (!a.acked) {
+        const b = document.createElement('button');
+        b.className = 'btn'; b.textContent = 'Acknowledge';
+        b.onclick = async () => { if (await act('/api/alerts/ack', {id: a.id})) loadAlerts(); };
+        li.append(b);
+      }
+      ul.append(li);
+    }
+  } catch (e) { $('alertlist').innerHTML = `<li>${esc(e.message)}</li>`; }
+}
+$('alerts').addEventListener('toggle', () => { if ($('alerts').open) loadAlerts(); });
+
+function renderBattery() {
+  const b = S.battery, el = $('bat');
+  const pct = b && b.pct != null ? Math.round(b.pct) : null;
+  el.querySelector('span').textContent = pct == null ? '—%' : `${pct}%`;
+  el.classList.toggle('low', !!(b && b.low));
+  el.classList.toggle('ok', pct != null && !b.low && pct > 50);
+  el.classList.toggle('mid', pct != null && !b.low && pct <= 50);
+  el.title = pct == null ?
+    (b ? 'No battery reading: is the INA226 wired? (click to set the return-home level)' :
+     'Battery shows while the robot software is on (click to set the return-home level)') :
+    `${b.volts.toFixed(2)} V, ${b.amps.toFixed(2)} A · returns home at ${b.return_home_pct}%` +
+    (b.low ? ' · LOW: going home' : '') + ' (click to change)';
+}
+async function batteryDialog() {
+  let cur;
+  try { cur = await api('/api/power/settings'); } catch (e) { toast(e.message, true); return; }
+  const b = S && S.battery;
+  const now = b && b.pct != null ? `Now ${Math.round(b.pct)}% (${b.volts.toFixed(2)} V, ${b.amps.toFixed(2)} A). ` : '';
+  const r = await ask({title: 'Return home on low battery', input: true, value: String(cur.return_home_pct),
+    text: `${now}The robot stops its laps or mapping and drives home when the battery reaches this level ` +
+          `(5–80 %). Pack: ${cur.cells}S lithium-ion, ${cur.cells === 6 ? '25.2' : '29.4'} V full.`,
+    buttons: [{label: 'Cancel', value: null}, {label: 'Pack type…', value: 'pack'},
+              {label: 'Save', cls: 'accent', value: 'save'}]});
+  if (!r) return;
+  if (r.value === 'pack') {
+    const cells = await ask({title: 'Battery pack',
+      text: 'Which lithium-ion pack is in the robot? A full charge reads about 25.2 V on a 6S pack and 29.4 V on a 7S pack.',
+      buttons: [{label: 'Cancel', value: null}, {label: '7S (29.4 V full)', value: 7},
+                {label: '6S (25.2 V full)', cls: 'accent', value: 6}]});
+    if (cells) await act('/api/power/settings', {cells});
+    return;
+  }
+  const pct = Number(r.text);
+  if (!Number.isInteger(pct)) { toast('Enter a whole number of percent', true); return; }
+  await act('/api/power/settings', {return_home_pct: pct});
+}
+$('bat').onclick = batteryDialog;
+$('bat').onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); batteryDialog(); } };
+$('c-faces').onchange = async () => {
+  const want = $('c-faces').checked;
+  if (!await act('/api/settings/faces', {on: want})) $('c-faces').checked = !want;
+};
 
 // ================================================================ MAP MANAGER
 let maps = [], mapSel = null, picking = false;
@@ -1313,12 +1505,15 @@ function render() {
     txt = LAPS[L.state] || L.state;
     col = L.state === 'error' ? 'var(--stop)' : ['running', 'home'].includes(L.state) ? 'var(--home)' : 'var(--go)';
   } else if (on && S.pending_start) txt = 'Starting…';
+  if (S.tamper.state === 'tripped') { txt = 'Tampered!'; col = 'var(--stop)'; }
+  else if (on && S.battery && S.battery.low) { txt += ' · battery low'; col = 'var(--stop)'; }
   $('pill').querySelector('span').textContent = txt;
   $('pill').querySelector('i').style.background = col;
   // always-in-reach Stop while the robot moves (any page; the full-screen map covers it)
   const moving = on && L && !['idle', 'done', 'error'].includes(L.state);
   $('estop').hidden = !moving || !$('full').hidden;
 
+  renderAlert();
   const F = S.faces;
   if (F && F.message && F.message !== lastFacesMsg) { lastFacesMsg = F.message; if (route.page !== 'robot') toast(F.message, F.error); }
   if (route.page === 'robot') renderRobot();
@@ -1327,7 +1522,15 @@ function render() {
   if (route.page === 'capture') renderCapture();
 }
 async function poll() {
-  try { S = await api('/api/state'); render(); }
+  try {
+    S = await api('/api/state');
+    // a panel server older than this page leaves these out: show them as "not there"
+    S.tamper = S.tamper || {state: 'unavailable', reason: ''};
+    S.settings = S.settings || {faces: false};
+    S.alerts = S.alerts || [];
+    if (typeof S.battery !== 'object') S.battery = null;
+    render();
+  }
   catch (e) {
     $('pill').querySelector('span').textContent = 'Panel not reachable';
     $('pill').querySelector('i').style.background = 'var(--stop)';

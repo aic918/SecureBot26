@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""The only program that talks to the ESP32 (firmware 2.1 protocol, see firmware/esp32/).
+"""The only program that talks to the ESP32 (firmware 2.2 protocol, see firmware/esp32/).
 
 Inputs
   /esp32/mode  std_msgs/String  stop | patrol | drive   (published by motion_manager_node)
   /cmd_vel     geometry_msgs/Twist                       used only in drive mode: sent as
                wheel speeds (V, speed_control:=true, default) or PWM (M)
+  /tamper/command  std_msgs/String  on | off | clear (clear = the alarm was acknowledged)
 Outputs
   /ultrasonic/left, /ultrasonic/right  sensor_msgs/Range  (no echo -> +inf, REP-117)
   /esp32/status  std_msgs/String  the firmware's `S,<mode>,<l>,<r>,<avoid>` line, without "S,"
@@ -14,6 +15,12 @@ Outputs
   /wheel_ticks   std_msgs/Int64MultiArray  [left, right] wheel encoder counts since the ESP32
                  started (`W,<left>,<right>`, + = that wheel forward); they restart at 0 when
                  the ESP32 restarts
+  /battery/raw   sensor_msgs/BatteryState  pack voltage (V) and current (A, + = discharging)
+                 from the INA226 (`B,<mV>,<mA>`), 2 Hz; guard_node turns it into a percentage
+  /tamper        std_msgs/String  off | armed | tripped,<tilt|lift> | unavailable (`T,...`)
+
+Tamper detection is armed when the bridge starts (tamper_detect:=true, the default): from then
+on, lifting or tipping the robot stops the motors in the ESP32 until /tamper/command "clear".
 
 Safety: the current command is resent every `heartbeat_period` (the firmware stops on its own
 after 250 ms without one). A mode or /cmd_vel older than `command_timeout` counts as "stop",
@@ -30,7 +37,7 @@ import time
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
-from sensor_msgs.msg import Imu, Range
+from sensor_msgs.msg import BatteryState, Imu, Range
 from std_msgs.msg import Int64MultiArray, String
 import serial
 
@@ -98,8 +105,14 @@ def choose_command(mode, mode_age, cmd, cmd_age, timeout, pwm_args, speed_args=N
 
 def parse_line(line):
     """('U', left_ft, right_ft) | ('G', yaw_deg, rate_dps) | ('W', left_ticks, right_ticks) |
-    ('S', 'drive,90,90,0') | ('I'/'E', text) | None."""
+    ('S', 'drive,90,90,0') | ('B', volts, amps) | ('T', 'tripped,tilt') | ('I'/'E', text) |
+    None."""
     parts = line.split(',')
+    if parts[0] == 'B' and len(parts) == 3:
+        try:
+            return 'B', int(parts[1]) / 1000.0, int(parts[2]) / 1000.0
+        except ValueError:
+            return None
     if parts[0] == 'W' and len(parts) == 3:
         try:
             return 'W', int(parts[1]), int(parts[2])
@@ -110,7 +123,7 @@ def parse_line(line):
             return parts[0], float(parts[1]), float(parts[2])
         except ValueError:
             return None
-    if parts[0] in ('S', 'I', 'E') and len(parts) > 1:
+    if parts[0] in ('S', 'T', 'I', 'E') and len(parts) > 1:
         return parts[0], line[2:]
     return None
 
@@ -157,6 +170,7 @@ class ESP32SerialBridge(Node):
         self.declare_parameter('command_timeout', 0.5)
         self.declare_parameter('silence_reset', 3.0)    # s without a line -> restart the ESP32
         self.declare_parameter('imu_yaw_sign', 1.0)     # -1.0: IMU board mounted upside down
+        self.declare_parameter('tamper_detect', True)   # arm tamper detection at start
         # Wheel speed control (firmware V command, 2026-11-22): /cmd_vel becomes wheel speeds in
         # encoder ticks/s and the ESP32 holds each wheel at its speed with the encoders (the two
         # motors differ by up to 50 % at the same PWM). false: open-loop PWM (M command) with
@@ -177,6 +191,7 @@ class ESP32SerialBridge(Node):
         self.timeout = float(p('command_timeout'))
         self.silence_reset = float(p('silence_reset'))
         self.imu_sign = float(p('imu_yaw_sign'))
+        self.tamper_detect = bool(p('tamper_detect'))
 
         self.serial_port = serial.Serial(self.port, int(p('baudrate')), timeout=0.05)
         if self.restart_esp32(wait=True):
@@ -194,6 +209,9 @@ class ESP32SerialBridge(Node):
 
         self.create_subscription(String, '/esp32/mode', self.mode_callback, 10)
         self.create_subscription(Twist, '/cmd_vel', self.cmd_vel_callback, 10)
+        self.create_subscription(String, '/tamper/command', self.tamper_callback, 10)
+        self.battery_pub = self.create_publisher(BatteryState, '/battery/raw', 10)
+        self.tamper_pub = self.create_publisher(String, '/tamper', 10)
         self.left_pub = self.create_publisher(Range, '/ultrasonic/left', 10)
         self.right_pub = self.create_publisher(Range, '/ultrasonic/right', 10)
         self.status_pub = self.create_publisher(String, '/esp32/status', 10)
@@ -235,6 +253,7 @@ class ESP32SerialBridge(Node):
     def send_settings(self):
         self.write_line('stop')
         self.write_line(f'speed {self.patrol_speed}')
+        self.write_line('tamper on' if self.tamper_detect else 'tamper off')
 
     def check_silence(self):
         now = time.monotonic()
@@ -252,6 +271,20 @@ class ESP32SerialBridge(Node):
 
     def mode_callback(self, msg):
         self.mode, self.mode_time = msg.data.strip().lower(), time.monotonic()
+
+    def tamper_callback(self, msg):
+        cmd = msg.data.strip().lower()
+        if cmd in ('on', 'off', 'clear'):
+            self.write_line(f'tamper {cmd}')
+            self.get_logger().info(f'ESP32 <- tamper {cmd}')
+
+    def publish_battery(self, volts, amps):
+        msg = BatteryState()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.voltage, msg.current = float(volts), float(amps)
+        msg.percentage = float('nan')
+        msg.present = True
+        self.battery_pub.publish(msg)
 
     def cmd_vel_callback(self, msg):
         self.cmd, self.cmd_time = (msg.linear.x, msg.angular.z), time.monotonic()
@@ -304,6 +337,10 @@ class ESP32SerialBridge(Node):
                 self.ticks_pub.publish(Int64MultiArray(data=[parsed[1], parsed[2]]))
             elif parsed[0] == 'S':
                 self.status_pub.publish(String(data=parsed[1]))
+            elif parsed[0] == 'B':
+                self.publish_battery(parsed[1], parsed[2])
+            elif parsed[0] == 'T':
+                self.tamper_pub.publish(String(data=parsed[1]))
             elif parsed[0] == 'E':
                 self.get_logger().warn(f'ESP32: {parsed[1]}')
             else:

@@ -16,6 +16,10 @@ pattern:=lanes (default) drives straight parallel lanes along the room's main wa
 side_clearance beside things and front_clearance ahead at lane ends; pattern:=contour drives
 rings at wall_clearance from the walls, outside in.
 
+faces:=true also runs live face recognition (securebot_live.launch.py with enable_motors:=false:
+vision only, it does not drive) alongside the laps, saving its newest frame for the web panel
+(launch_helpers.LIVE_PREVIEW) so the panel's camera view and tamper snapshots keep working.
+
 rounds:=0 keeps lapping until Stop. Don't run it together with the live, teleop, explore or
 other nav launches (only one program can own the ESP32 port).
 """
@@ -29,6 +33,7 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 
 from securebot_ros import room_store as rs
+from securebot_ros.launch_helpers import faces_launch
 
 
 def resolve_map(room, map_yaml, maps_dir):
@@ -73,8 +78,8 @@ def launch_setup(context):
                           'min_pocket': float(get('min_pocket')),
                           'require_gyro': get('imu') == 'true',
                           'home': get('home')}]),
-    ] + laps_window(get('panel')) + auto_localize(get('auto_localize'), map_yaml, get('home'),
-                                                  get('localize_near'))
+    ] + faces_launch(get('faces')) + laps_window(get('panel')) + auto_localize(
+        get('auto_localize'), map_yaml, get('home'), get('localize_near'))
 
 
 def laps_window(panel):
@@ -162,6 +167,8 @@ def generate_launch_description():
         DeclareLaunchArgument('drive_pwm', default_value='625',
                               description='fixed drive PWM (as before the encoders); empty = '
                                           'encoder speed control'),
+        DeclareLaunchArgument('faces', default_value='false',
+                              description='also run live face recognition (vision only)'),
         DeclareLaunchArgument('imu', default_value='true',
                               description='use the gyro for heading; false = LiDAR only'),
         DeclareLaunchArgument(

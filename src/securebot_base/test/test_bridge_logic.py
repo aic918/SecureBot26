@@ -47,6 +47,15 @@ def test_parse_lines():
     assert parse_line('LEFT: 9.28 ft') is None
 
 
+def test_parse_battery_and_tamper_lines():
+    assert parse_line('B,25200,1500') == ('B', 25.2, 1.5)
+    assert parse_line('B,24000,-100') == ('B', 24.0, -0.1)
+    assert parse_line('B,25.2,1') is None
+    assert parse_line('B,1') is None
+    assert parse_line('T,armed') == ('T', 'armed')
+    assert parse_line('T,tripped,tilt') == ('T', 'tripped,tilt')
+
+
 def test_min_pwm_lifts_small_commands_but_not_zero():
     args = PWM_ARGS + (70,)
     assert twist_to_pwm(0.0, 0.0, *args) == (0, 0)

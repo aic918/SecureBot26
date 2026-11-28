@@ -7,15 +7,19 @@ whether to keep patrolling or hold a security stop.
 ## Hardware
 - **Jetson Orin Nano:** ROS 2 Humble, camera, person detection, face recognition, mapping,
   navigation and the security logic.
-- **ESP32:** motors, two front ultrasonics, MPU-6050 gyro and wheel encoders; takes commands
-  from the Jetson over USB (protocol and pins: `firmware/esp32/README.md`).
+- **ESP32:** motors, two front ultrasonics, MPU-6050 gyro and accelerometer (heading, tamper
+  detection), INA226 battery monitor and wheel encoders; takes commands from the Jetson over
+  USB (protocol and pins: `firmware/esp32/README.md`).
+- **Battery:** 24 V 3.2 Ah lithium-ion pack (6S, 25.2 V full; 7S packs read 29.4 V full),
+  measured by the INA226 (36 V max; the INA219's 26 V is too low for this pack).
 - **RPLidar A1M8:** 360° scans for mapping and localization.
 
 ```
 src/securebot_base/   ROS <-> ESP32 bridge
 src/securebot_ros/    vision, security logic, mapping, exploring, laps, navigation, web panel
 firmware/esp32/       ESP32 firmware and its tests
-tools/                web panel launcher, re-localization, run recorder, LiDAR viewer, motor tuning
+tools/                web panel launcher, re-localization, run recorder, face + SLAM check,
+                      LiDAR viewer, motor tuning
 maps/                 saved maps, room names and no-pass lines
 ```
 
@@ -68,14 +72,26 @@ from a terminal at the same time.
 | **Swap to camera / map** | Switches the big view between the map and the robot's webcam (not while face photos are being taken or the live face node has the camera). |
 | **Manual re-localize** | Stops the robot and finds where it is on the map again. Use it after moving the robot by hand; keep it still until it finishes. |
 | **Return home** | Stops the laps and drives back to home (the shortest clear way), then stops. |
+| **Face recognition** (switch) | Runs live face recognition alongside the laps or mapping, from the next Power on. The **Faces** line shows what it sees (authorized / unauthorized / scanning, with names). The camera view keeps working: it shows the face node's frames. |
 | **Power off** | Shuts the robot software down (asks first). |
 | **■ STOP** (corner) | Shown while the robot moves: same as **Stop**, always in reach. |
-| **Battery** | Shows `—%`: the robot has no battery sensor yet. |
+| **Battery** (map corner) | The pack's charge while the robot software is on (`—%` with no reading); green, amber at 50 % and under, red when low. Click it to set the **return-home level** (default 20 %) and the pack type (6S / 7S). |
 
 **Map view:** the room, the robot, the planned lanes, the path being driven now, home, the
 no-pass lines (black, outlined) and orange boxes where something blocked the robot. Tap a box
 to remove it; scroll or pinch to zoom, drag to pan, **Fit** to see it all.
 **Logs** (under the view): this run's log and the last 10 runs' files.
+**Alerts** (under the logs): every tamper alert with its time and snapshot.
+
+**Low battery:** when the charge stays at or under the return-home level for 10 s, the robot
+stops its laps or mapping and drives home (the pill says *battery low*), and Start is refused
+until it is charged.
+
+**Tamper alert:** with the robot software on, lifting or tipping the robot stops the motors at
+once (in the ESP32 itself) and a red banner appears on every page with the time and a webcam
+snapshot (click it to enlarge), with a beep. The motors stay off and Start is refused until
+you press **Acknowledge**; then press Start to carry on. Alerts are kept in `alerts/`
+(newest 100). A pager can be hooked in later (`web_alerts.AlertStore.hooks`).
 
 ### Map manager
 Every room as a map preview. Click to select, double-click to see it full screen (**Esc** or
@@ -106,6 +122,22 @@ open their photos. Stop the live face node first: taking photos needs the camera
 - **Robot is in the wrong place on the map:** **Manual re-localize** with the robot standing still.
 - **Gyro not found** (`imu not found ... SDA=0` in the log): power-cycle the robot; if it
   persists, check the MPU-6050 wiring, then **Power off** and **Start** again.
+- **Battery shows `—%` while on:** `power monitor not found` in the log: check the INA226
+  wiring (`firmware/esp32/README.md`). A percentage that looks wrong: check the pack type (6S
+  or 7S) in the battery dialog.
+- **Tamper detection "Unavailable":** the accelerometer did not answer at boot (same wiring as
+  the gyro). **Tamper alerts while just driving:** raise `TAMPER_LIFT_G` / `TAMPER_TILT_DEG`
+  in the firmware.
+
+### Testing face recognition and SLAM together
+Turn the **Face recognition** switch on and start laps (or map a room), then beside it:
+```bash
+python3 ~/securebot_ws/tools/faces_slam_check.py --minutes 10
+```
+It records the face frame rate, LiDAR rate, position updates and jumps, errors, CPU / GPU load
+and temperatures every second, and ends with PASS or what failed (saved in `log/faces_slam/`).
+From a terminal instead of the panel: `ros2 launch securebot_ros securebot_laps.launch.py
+room:="<room>" faces:=true`.
 
 ## Contributing
 - Branch from `main` (`feat/<sprint>-<name>`) and open a PR; `main` needs owner review.

@@ -24,9 +24,12 @@ venv/
 authorized_faces/
 encodings/
 
-# Runtime logs / captures
+# Runtime logs / captures, tamper alerts (webcam snapshots), local settings, deleted maps
 logs/
 *.log
+alerts/
+config/
+maps/deleted/
 
 # Secrets
 .env

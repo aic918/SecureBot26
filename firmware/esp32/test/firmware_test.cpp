@@ -18,6 +18,10 @@ unsigned long micros() { return g_ms * 1000UL; }
 static bool g_imu_present = true;
 static bool g_imu_wired = true;      // module pull-ups on SDA/SCL: the pins read 1
 static int16_t g_gyro_z_raw = 0;
+static int16_t g_accel_raw[3] = {0, 0, 16384};   // standing: 1 g along the board's Z
+static bool g_ina_present = false;                // INA226 battery monitor at 0x40
+static uint16_t g_ina_bus = 0, g_ina_shunt = 0, g_ina_config = 0;
+static uint8_t g_tx_addr = 0;
 static uint8_t g_imu_reg[128];
 static int g_wire_sda = -1, g_wire_scl = -1;
 static uint8_t g_tx[8];
@@ -32,16 +36,26 @@ static int g_wake_after_writes = 0;          // >0: the IMU starts answering aft
 void TwoWire::beginTransmission(uint8_t addr) {
   g_tx_len = 0;
   if (g_wake_after_writes > 0 && --g_wake_after_writes == 0) g_imu_present = true;
-  g_tx_ok = g_imu_present && addr == 0x68;
+  g_tx_addr = addr;
+  g_tx_ok = (g_imu_present && addr == 0x68) || (g_ina_present && addr == 0x40);
 }
 size_t TwoWire::write(uint8_t b) { if (g_tx_len < 8) g_tx[g_tx_len++] = b; return 1; }
 uint8_t TwoWire::endTransmission(bool) {
   if (!g_tx_ok) return 2;                                  // NACK on address
-  if (g_tx_len == 2) g_imu_reg[g_tx[0] & 127] = g_tx[1];   // register write
+  if (g_tx_addr == 0x68 && g_tx_len == 2) g_imu_reg[g_tx[0] & 127] = g_tx[1];   // register write
+  if (g_tx_addr == 0x40 && g_tx_len == 3 && g_tx[0] == 0x00) g_ina_config = (g_tx[1] << 8) | g_tx[2];
   return 0;
 }
 uint8_t TwoWire::requestFrom(int addr, int n) {
+  if (addr == 0x40 && g_ina_present && g_tx_len >= 1 && n == 2) {
+    uint16_t v = g_tx[0] == 0xFE ? 0x5449 : g_tx[0] == 0x02 ? g_ina_bus : g_tx[0] == 0x01 ? g_ina_shunt : 0;
+    g_rx[0] = v >> 8; g_rx[1] = v & 0xFF; g_rx_len = 2; g_rx_pos = 0; return 2;
+  }
   if (!g_imu_present || addr != 0x68) return 0;
+  if (g_tx_len >= 1 && g_tx[0] == 0x3B && n == 6) {        // ACCEL_XOUT_H .. ACCEL_ZOUT_L
+    for (int i = 0; i < 3; i++) { g_rx[2 * i] = (uint8_t)((uint16_t)g_accel_raw[i] >> 8); g_rx[2 * i + 1] = g_accel_raw[i] & 0xFF; }
+    g_rx_len = 6; g_rx_pos = 0; return 6;
+  }
   if (g_tx_len >= 1 && g_tx[0] == 0x47 && n == 2) {        // GYRO_ZOUT_H, _L
     g_rx[0] = (uint8_t)((uint16_t)g_gyro_z_raw >> 8); g_rx[1] = (uint8_t)(g_gyro_z_raw & 0xFF);
     g_rx_len = 2; g_rx_pos = 0; return 2;
@@ -134,7 +148,7 @@ const long ECHO_2FT = 3556;       // ~2.0 ft: clear
 static void t_boot() {
   boot(); step(10);
   CHECK(leftPWM() == 0 && rightPWM() == 0);
-  CHECK(outHas("I,SecureBot ESP32 fw 2.1 ready"));
+  CHECK(outHas("I,SecureBot ESP32 fw 2.2 ready"));
 }
 static void t_drive_and_clamp() {
   boot();
@@ -373,7 +387,7 @@ static void t_imu_absent() {
   boot();
   CHECK(!imuOk && outHas("E,imu not found"));
   CHECK(outHas("E,imu not found (MPU-6050 on SDA 21 / SCL 22); wire check (1 = connected): SDA=0 SCL=0"));
-  CHECK(outHas("I,SecureBot ESP32 fw 2.1 ready"));
+  CHECK(outHas("I,SecureBot ESP32 fw 2.2 ready"));
   step(500);
   CHECK(!outHas("G,"));                                // no G lines, everything else runs
   send("M,100,100\n"); step(5);
@@ -384,7 +398,7 @@ static void t_imu_wired_but_silent() {
   boot();
   CHECK(!imuOk && outHas("wire check (1 = connected): SDA=1 SCL=1"));
   CHECK(outHas("E,imu i2c devices"));
-  CHECK(outHas("I,SecureBot ESP32 fw 2.1 ready"));
+  CHECK(outHas("I,SecureBot ESP32 fw 2.2 ready"));
 }
 static void t_imu_slow_to_wake() {
   // the MPU-6050 NACKs for a while after power-on: setup must keep trying
@@ -525,6 +539,98 @@ static void t_encoder_scope() {
   CHECK(outHas("I,encscope GPIO35 min/avg/max mV 3300/3300/3300 low 0%"));
 }
 
+// ---------- tamper ----------
+static void tilt(float deg) {                  // robot tipped by deg about the board's X axis
+  float r = deg * (float)M_PI / 180.0f;
+  g_accel_raw[0] = 0; g_accel_raw[1] = (int16_t)(16384 * sinf(r)); g_accel_raw[2] = (int16_t)(16384 * cosf(r));
+}
+static void t_tamper_off_by_default() {
+  boot();
+  CHECK(accelOk && !tamperArmed);
+  step(STATUS_MS + 1);
+  CHECK(outHas("T,off"));
+  tilt(80); stepHB(1000, "M,100,100");
+  CHECK(!tamperTripped && leftPWM() == 100);   // not armed: carrying the robot is fine
+}
+static void t_tamper_tilt_stops_and_latches() {
+  boot();
+  send("tamper on\n"); step(5);
+  CHECK(outHas("T,armed"));
+  stepHB(300, "M,100,100");
+  CHECK(leftPWM() == 100);
+  tilt(60); stepHB(200, "M,100,100");
+  CHECK(!tamperTripped);                       // a short knock: not yet
+  stepHB(400, "M,100,100");
+  CHECK(tamperTripped && outHas("E,TAMPER: tilt") && outHas("T,tripped,tilt"));
+  CHECK(leftPWM() == 0 && rightPWM() == 0);
+  tilt(0); stepHB(1000, "M,100,100");          // set back down, still commanded to drive
+  CHECK(leftPWM() == 0 && rightPWM() == 0);    // latched until acknowledged
+  send("tamper clear\n"); stepHB(300, "M,100,100");
+  CHECK(!tamperTripped && tamperArmed && leftPWM() == 100);
+  CHECK(outHas("I,tamper alarm cleared"));
+}
+static void t_tamper_small_tilt_ignored() {
+  boot();
+  send("tamper on\n"); tilt(20); stepHB(2000, "M,100,100");   // a ramp
+  CHECK(!tamperTripped && leftPWM() == 100);
+}
+static void t_tamper_lift() {
+  boot();
+  send("tamper on\n"); step(5);
+  g_accel_raw[2] = (int16_t)(16384 * 1.5); stepHB(80, "M,100,100");   // a jolt: too short
+  g_accel_raw[2] = 16384; stepHB(300, "M,100,100");
+  CHECK(!tamperTripped);
+  g_accel_raw[2] = (int16_t)(16384 * 1.5); stepHB(400, "M,100,100");  // picked up
+  CHECK(tamperTripped && outHas("T,tripped,lift") && leftPWM() == 0);
+}
+static void t_tamper_any_orientation() {
+  g_accel_raw[0] = 0; g_accel_raw[1] = 0; g_accel_raw[2] = -16384;     // board upside down
+  boot();
+  send("tamper on\n"); stepHB(1000, "M,100,100");
+  CHECK(!tamperTripped && leftPWM() == 100);
+  g_accel_raw[1] = -16384; g_accel_raw[2] = 0; stepHB(600, "M,100,100");
+  CHECK(tamperTripped);
+}
+static void t_tamper_unavailable_without_imu() {
+  g_imu_present = false;
+  boot();
+  send("tamper on\n"); step(STATUS_MS + 1);
+  CHECK(outHas("T,unavailable") && !outHas("T,armed"));
+}
+static void t_tamper_commands_not_heartbeat() {
+  boot();
+  send("M,100,100\n"); step(100);
+  for (int i = 0; i < 3; i++) { send("tamper on\n"); step(100); }
+  CHECK(leftPWM() == 0 && outHas("E,watchdog"));
+}
+
+// ---------- battery ----------
+static void t_power_monitor() {
+  g_ina_present = true;
+  g_ina_bus = 20160;                             // x 1.25 mV = 25.2 V
+  g_ina_shunt = 6000;                            // x 2.5 uV = 15 mV over 0.01 ohm = 1.5 A
+  boot();
+  CHECK(outHas("I,power monitor ready") && g_ina_config == 0x4527 && powerOk);
+  step(POWER_PERIOD_MS + 1);
+  CHECK(outHas("B,25200,1500"));
+  g_ina_shunt = (uint16_t)(int16_t)-400;        // charging: current flows back in
+  step(POWER_PERIOD_MS + 1);
+  CHECK(outHas("B,25200,-100"));
+}
+static void t_power_monitor_absent() {
+  boot();
+  CHECK(outHas("E,power monitor not found (INA226 at 0x40)") && !powerOk);
+  step(2000);
+  CHECK(!outHas("B,"));
+}
+static void t_power_monitor_without_imu() {
+  g_imu_present = false; g_ina_present = true; g_ina_bus = 19200;
+  boot();
+  CHECK(!imuOk && powerOk);                      // the bus is up for the INA226 alone
+  step(POWER_PERIOD_MS + 1);
+  CHECK(outHas("B,24000,0"));
+}
+
 struct T { const char *name; void (*fn)(); };
 int main(int argc, char **argv) {
   T tests[] = {
@@ -541,7 +647,15 @@ int main(int argc, char **argv) {
     {"robot_wheel_helper", t_robot_wheel_helper}, {"speed_command_tracks", t_speed_command_tracks},
     {"speed_command_kick_and_clamp", t_speed_command_kick_and_clamp},
     {"speed_command_watchdog_and_gate", t_speed_command_watchdog_and_gate},
-    {"imu_rejects_bad_calibration", t_imu_rejects_bad_calibration}};
+    {"imu_rejects_bad_calibration", t_imu_rejects_bad_calibration},
+    {"tamper_off_by_default", t_tamper_off_by_default},
+    {"tamper_tilt_stops_and_latches", t_tamper_tilt_stops_and_latches},
+    {"tamper_small_tilt_ignored", t_tamper_small_tilt_ignored}, {"tamper_lift", t_tamper_lift},
+    {"tamper_any_orientation", t_tamper_any_orientation},
+    {"tamper_unavailable_without_imu", t_tamper_unavailable_without_imu},
+    {"tamper_commands_not_heartbeat", t_tamper_commands_not_heartbeat},
+    {"power_monitor", t_power_monitor}, {"power_monitor_absent", t_power_monitor_absent},
+    {"power_monitor_without_imu", t_power_monitor_without_imu}};
   if (argc < 2) { for (auto &t : tests) printf("%s\n", t.name); return 0; }
   for (auto &t : tests) if (!strcmp(t.name, argv[1])) { t.fn(); return failures ? 1 : 0; }
   printf("unknown test %s\n", argv[1]); return 2;

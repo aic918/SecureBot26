@@ -11,6 +11,9 @@ still refuses to drive forward into anything closer than 1 ft.
 min_pwm lifts slow commands to a PWM that actually turns the wheels; raise it if a wheel only
 hums at mapping speed, lower it if the robot jumps. Don't run this together with
 securebot_live.launch.py (both start the bridge; only one program can own the ESP32 port).
+
+It also starts guard_node: the battery percentage, return home when the battery is low and
+stop when the robot is lifted or tipped (the ESP32 stops the motors itself first).
 """
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
@@ -39,4 +42,6 @@ def generate_launch_description():
                           'gentle_pwm': ParameterValue(arg('gentle_pwm'), value_type=int),
                           'speed_control': ParameterValue(arg('speed_control'), value_type=bool),
                           'port': arg('port')}]),
+        # battery %, return home when low, stop when tampered with (guard_node.py)
+        Node(package='securebot_ros', executable='guard_node', output='screen'),
     ])

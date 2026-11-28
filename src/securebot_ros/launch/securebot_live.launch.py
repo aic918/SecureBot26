@@ -32,7 +32,7 @@ NODE_PARAMS = [
     'face_tolerance', 'face_unknown_distance', 'face_margin', 'vote_window',
     'votes_needed', 'face_recheck_s', 'face_detector', 'face_model', 'face_upsample',
     'face_min_size', 'face_min_sharpness', 'max_face_crops', 'show_camera',
-    'debug_dir', 'track_jump_iou',
+    'debug_dir', 'track_jump_iou', 'preview_file',
 ]
 # launch argument -> esp32_serial_bridge parameter
 BRIDGE_PARAMS = {'esp32_port': 'port', 'motor_speed': 'patrol_speed'}

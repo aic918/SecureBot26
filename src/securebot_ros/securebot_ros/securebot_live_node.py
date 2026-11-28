@@ -114,6 +114,11 @@ class SecureBotLiveNode(Node):
             # when set, save each face read (crop) and a full frame at every status
             # change here, to trace exactly which image caused a decision
             "debug_dir": "",
+            # when set, the newest camera frame is saved here as JPEG every
+            # preview_period_s, so the web panel can show the camera (and take tamper
+            # snapshots) while this node holds it
+            "preview_file": "",
+            "preview_period_s": 0.25,
         }
         for name, default in params.items():
             self.declare_parameter(name, default)
@@ -138,6 +143,9 @@ class SecureBotLiveNode(Node):
         self.max_face_crops = p["max_face_crops"]
         self.track_jump_iou = p["track_jump_iou"]
         self.show_camera = p["show_camera"]
+        self.preview_file = Path(p["preview_file"]).expanduser() if p["preview_file"] else None
+        self.preview_period = float(p["preview_period_s"])
+        self.preview_last = 0.0
         self.debug_dir = None
         if p["debug_dir"]:
             self.debug_dir = Path(p["debug_dir"]).expanduser() / time.strftime("%Y%m%d_%H%M%S")
@@ -455,6 +463,8 @@ class SecureBotLiveNode(Node):
             self.send_motor_command("patrol")
             motor_status = "PATROL"
 
+        self.save_preview(frame, now)
+
         self.fps_frames += 1
         if now - self.fps_since >= 10.0:
             fps = self.fps_frames / (now - self.fps_since)
@@ -463,6 +473,24 @@ class SecureBotLiveNode(Node):
 
         if self.show_camera:
             self.draw(frame, people, now, motor_status, face_status)
+
+    def save_preview(self, frame, now):
+        """The newest frame (640 px wide) to preview_file for the web panel, atomically."""
+        if self.preview_file is None or now - self.preview_last < self.preview_period:
+            return
+        self.preview_last = now
+        h, w = frame.shape[:2]
+        small = cv2.resize(frame, (640, h * 640 // w)) if w > 640 else frame
+        ok, buf = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 70])
+        if not ok:
+            return
+        tmp = self.preview_file.with_suffix(".tmp")
+        try:
+            self.preview_file.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_bytes(buf.tobytes())
+            tmp.replace(self.preview_file)
+        except OSError as e:
+            self.get_logger().warn(f"preview not saved: {e}", throttle_duration_sec=30.0)
 
     # ------------------------------------------------------------------ display
 

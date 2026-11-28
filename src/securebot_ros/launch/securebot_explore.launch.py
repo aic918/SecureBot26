@@ -15,6 +15,7 @@ Otherwise save the map with "Save current map as a new room..." in the
 
 The web panel's Map Manager runs it as: room:=<name> rooms:=false rviz:=false panel:=web
 esp32_port:=<port> (no windows; its own Start / Stop / Return home buttons and live map).
+faces:=true also runs live face recognition alongside (vision only, as in the laps launch).
 
 Don't run it together with the live, teleop or nav launches (only one program can own the
 ESP32 port, and only one SLAM may run).
@@ -23,12 +24,19 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription, \
+    OpaqueFunction
 from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+
+
+def faces(context):
+    from securebot_ros.launch_helpers import faces_launch
+    return faces_launch(context.launch_configurations['faces'])
+
 
 ESP32_PORT = '/dev/serial/by-path/platform-3610000.usb-usb-0:2.4:1.0-port0'   # teleop's default
 
@@ -50,6 +58,9 @@ def generate_launch_description():
                                           '(web_panel) passes panel:=web for none'),
         DeclareLaunchArgument('esp32_port', default_value=ESP32_PORT,
                               description='ESP32 serial port (by USB socket path)'),
+        DeclareLaunchArgument('faces', default_value='false',
+                              description='also run live face recognition (vision only)'),
+        OpaqueFunction(function=faces),
         GroupAction(scoped=True, actions=[IncludeLaunchDescription(
             PythonLaunchDescriptionSource(launch('securebot_slam.launch.py')),
             launch_arguments={'rviz': LaunchConfiguration('rviz')}.items())]),
