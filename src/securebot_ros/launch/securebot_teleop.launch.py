@@ -22,7 +22,12 @@ from launch_ros.parameter_descriptions import ParameterValue
 def generate_launch_description():
     arg = LaunchConfiguration
     return LaunchDescription([
-        DeclareLaunchArgument('min_pwm', default_value='665'),     # of 1023 (10-bit duty)
+        DeclareLaunchArgument('min_pwm', default_value='575'),     # of 1023 (10-bit duty)
+        DeclareLaunchArgument('max_pwm', default_value='655'),
+        DeclareLaunchArgument('gentle_pwm', default_value='565'),
+        DeclareLaunchArgument('speed_control', default_value='true',
+                              description='true: wheel speeds held by the encoders (V); false: '
+                                          'fixed PWM between min_pwm and max_pwm (M)'),
         DeclareLaunchArgument(
             'port', default_value='/dev/serial/by-path/platform-3610000.usb-usb-0:2.4:1.0-port0',
             description='ESP32 serial port (by USB socket path)'),
@@ -30,5 +35,8 @@ def generate_launch_description():
              parameters=[{'require_security': False, 'idle_action': 'stop'}]),
         Node(package='securebot_base', executable='esp32_serial_bridge', output='screen',
              parameters=[{'min_pwm': ParameterValue(arg('min_pwm'), value_type=int),
+                          'max_pwm': ParameterValue(arg('max_pwm'), value_type=int),
+                          'gentle_pwm': ParameterValue(arg('gentle_pwm'), value_type=int),
+                          'speed_control': ParameterValue(arg('speed_control'), value_type=bool),
                           'port': arg('port')}]),
     ])

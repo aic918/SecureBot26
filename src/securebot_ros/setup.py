@@ -47,6 +47,8 @@ entry_points={
         'laps_panel = securebot_ros.laps_panel:main',
         'heading_odom_node = securebot_ros.heading_odom_node:main',
         'web_panel = securebot_ros.web_panel:main',
+        'find_lidar_front = securebot_ros.find_lidar_front_node:main',
+        'find_lidar_shadow = securebot_ros.find_lidar_shadow_node:main',
     ],
 },
 

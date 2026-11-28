@@ -60,7 +60,7 @@ def launch_setup(context):
                               'imu': get('imu')}.items())]),
         GroupAction(scoped=True, actions=[IncludeLaunchDescription(
             PythonLaunchDescriptionSource(launch('securebot_teleop.launch.py')),
-            launch_arguments={'port': get('esp32_port')}.items())]),
+            launch_arguments=drive_args(get('esp32_port'), get('drive_pwm')).items())]),
         Node(package='securebot_ros', executable='laps_node', output='screen',
              parameters=[{'map': map_yaml, 'room': get('room') or os.path.basename(map_yaml),
                           'rounds': int(get('rounds')),
@@ -73,7 +73,8 @@ def launch_setup(context):
                           'min_pocket': float(get('min_pocket')),
                           'require_gyro': get('imu') == 'true',
                           'home': get('home')}]),
-    ] + laps_window(get('panel')) + auto_localize(get('auto_localize'), map_yaml)
+    ] + laps_window(get('panel')) + auto_localize(get('auto_localize'), map_yaml, get('home'),
+                                                  get('localize_near'))
 
 
 def laps_window(panel):
@@ -86,15 +87,34 @@ def laps_window(panel):
 GLOBAL_LOCALIZE = os.path.expanduser('~/securebot_ws/tools/global_localize.py')
 
 
-def auto_localize(enabled, map_yaml):
-    """Once AMCL is up, find the robot on the map from a LiDAR scan and send /initialpose."""
+def drive_args(port, drive_pwm):
+    """Bridge settings for laps. drive_pwm (default 625): fixed PWM as before the wheel
+    encoders - floor = ceiling = drive_pwm, corrections at 610. 665 (the 2026-11-22 morning
+    speed, ~0.38 m/s on straights) lost its position in a long run; 625 is a little slower. Empty: the encoders' speed control
+    (0.2 m/s as the lap follower asks; straighter, slower)."""
+    args = {'port': port}
+    if drive_pwm.strip():
+        pwm = str(int(drive_pwm))
+        args.update({'speed_control': 'false', 'min_pwm': pwm, 'max_pwm': pwm,
+                     'gentle_pwm': '610'})
+    return args
+
+
+def auto_localize(enabled, map_yaml, home='', localize_near=''):
+    """Once AMCL is up, find the robot on the map from a LiDAR scan and send /initialpose.
+    It looks near localize_near first (the panel passes where the last run in this room ended),
+    then near HOME (home:=x,y, else the map's start point 0,0, where exploring began), then
+    everywhere (see tools/global_localize.py)."""
     if enabled.lower() != 'true':
         return []
     if not os.path.exists(GLOBAL_LOCALIZE):
         return [LogInfo(msg=f'auto_localize: {GLOBAL_LOCALIZE} not found; '
                             'set the pose with "2D Pose Estimate" in RViz')]
+    near = ';'.join(p for p in (localize_near.strip(),
+                                (home or '').strip() or '0,0') if p)
     return [ExecuteProcess(cmd=['python3', GLOBAL_LOCALIZE, '--map', map_yaml,
-                                '--wait', '--tries', '5'],
+                                '--wait', '--tries', '5', f'--near={near}',   # '=': x may be negative
+                                '--turn'],
                            name='global_localize', output='screen')]
 
 
@@ -136,6 +156,12 @@ def generate_launch_description():
         DeclareLaunchArgument('panel', default_value='true',
                               description='the "SecureBot Laps" window; the web panel '
                                           '(web_panel) passes panel:=web for none'),
+        DeclareLaunchArgument('localize_near', default_value='',
+                              description='x,y to look for the robot first (the panel passes '
+                                          'where the last run in this room ended)'),
+        DeclareLaunchArgument('drive_pwm', default_value='625',
+                              description='fixed drive PWM (as before the encoders); empty = '
+                                          'encoder speed control'),
         DeclareLaunchArgument('imu', default_value='true',
                               description='use the gyro for heading; false = LiDAR only'),
         DeclareLaunchArgument(

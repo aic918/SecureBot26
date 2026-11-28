@@ -27,7 +27,7 @@ class Params:
     half_width = 0.256            # wheels, centre to outer face (m)
     margin = 0.05
     stop_distance = FOOT          # ultrasonic / LiDAR stop distance from the front edge
-    drive_speed = 0.2             # m/s requested (the bridge lifts it to the start power)
+    drive_speed = 0.2             # m/s (the ESP32 holds the wheels at it; node param)
     turn_speed = 0.8              # rad/s requested for turning on the spot
     steer_gain = 1.2              # rad/s per rad of heading error while driving
     max_steer = 0.5               # rad/s

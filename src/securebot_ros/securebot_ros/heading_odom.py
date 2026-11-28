@@ -1,4 +1,4 @@
-"""Odometry from LiDAR scan matching plus the gyro heading (no ROS).
+"""Odometry from the wheel encoders (or LiDAR scan matching) plus the gyro heading (no ROS).
 
 rf2o (scan matching) estimates both how far the robot moved and how much it turned, but it
 loses track during SecureBot's fast full-power spins, and its heading then drifts or jumps.
@@ -12,6 +12,15 @@ The MPU-6050 gyro measures turning directly and does not care how fast the robot
 
 If the gyro goes quiet (older than `imu_timeout`), rf2o's own heading changes are used until
 it is back.
+
+Wheel encoders, when they report (`update_wheels`), replace rf2o for the distance: each update
+moves the robot by the mean of the two wheels' travel along the gyro heading. In a long, plain
+hallway scan matching cannot tell how far along it the robot is (and the LiDAR is blind ahead
+of the camera tower); the wheels measure exactly that. The heading stays the gyro's: on the
+spot the wheels slip and scrub (a measured 90 deg spin read 115 deg on the encoders). rf2o's
+distance is used again while the encoders are silent (older than `wheel_timeout`). A jump of
+more than `max_step` m in one update (the ESP32 restarted and its counts began again at 0) only
+re-bases the counts.
 """
 import math
 
@@ -21,9 +30,16 @@ def wrap(a):
 
 
 class HeadingOdom:
-    def __init__(self, spin_gate=0.6, imu_timeout=0.5):
+    def __init__(self, spin_gate=0.6, imu_timeout=0.5, ticks_per_meter=0.0, wheel_timeout=0.5,
+                 max_step=0.5):
         self.spin_gate = spin_gate        # rad/s
         self.imu_timeout = imu_timeout    # s
+        self.ticks_per_meter = ticks_per_meter    # 0: do not use the encoders
+        self.wheel_timeout = wheel_timeout        # s
+        self.max_step = max_step                  # m in one encoder update
+        self.ticks = None                 # last (left, right) encoder counts
+        self.wheel_time = -math.inf
+        self.distance = 0.0               # m driven forward (minus backward) by the wheels
         self.x = self.y = self.yaw = 0.0
         self.imu_offset = None            # gyro yaw that maps to self.yaw
         self.imu_yaw = None
@@ -33,6 +49,24 @@ class HeadingOdom:
 
     def imu_ok(self, now):
         return self.imu_yaw is not None and now - self.imu_time <= self.imu_timeout
+
+    def wheels_ok(self, now):
+        return self.ticks_per_meter > 0 and now - self.wheel_time <= self.wheel_timeout
+
+    def update_wheels(self, now, left, right):
+        """Encoder counts since the ESP32 started (+ = forward). Returns the fused pose."""
+        if self.ticks_per_meter <= 0:
+            return self.x, self.y, self.yaw
+        if self.ticks is not None:
+            dl = (left - self.ticks[0]) / self.ticks_per_meter
+            dr = (right - self.ticks[1]) / self.ticks_per_meter
+            if max(abs(dl), abs(dr)) <= self.max_step:
+                d = (dl + dr) / 2.0
+                self.x += d * math.cos(self.yaw)
+                self.y += d * math.sin(self.yaw)
+                self.distance += d
+        self.ticks, self.wheel_time = (left, right), now
+        return self.x, self.y, self.yaw
 
     def update_imu(self, now, yaw, rate):
         """Gyro heading (rad, any zero) and yaw rate (rad/s)."""
@@ -50,7 +84,7 @@ class HeadingOdom:
             c, s = math.cos(-lyaw), math.sin(-lyaw)
             fwd, side = c * dx - s * dy, s * dx + c * dy
             spinning = self.imu_ok(now) and abs(self.imu_rate) > self.spin_gate
-            if not spinning:
+            if not spinning and not self.wheels_ok(now):
                 c, s = math.cos(self.yaw), math.sin(self.yaw)
                 self.x += c * fwd - s * side
                 self.y += s * fwd + c * side

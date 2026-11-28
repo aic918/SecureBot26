@@ -10,11 +10,14 @@ the ESP32 (both are CP2102 adapters with the same serial number).
 
 The base_link -> laser transform is a placeholder until the URDF (Sprint 2, S2-3) has the
 measured LiDAR position. robot_state_publisher publishes urdf/securebot.urdf (the case, to
-scale: 495 x 360 mm) on /robot_description so RViz can draw the robot. laser_yaw turns the laser frame so its +x is the robot's front: the
-LiDAR sits right behind the camera tower, and the tower's shadow is at 180 deg in the laser
-frame, so the laser's +x points backwards and the default yaw is pi.
+scale: 495 x 360 mm) on /robot_description so RViz can draw the robot. laser_yaw turns the
+laser frame relative to the robot's front. Its default comes from config/lidar_mount.yaml,
+where securebot_find_front.launch.py saves it after measuring it on a short straight drive
+(2026-11-22: guessing it from the camera tower's shadow went wrong once the tower changed).
 """
 import os
+
+import yaml
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -25,6 +28,15 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 LIDAR_PORT = '/dev/serial/by-path/platform-3610000.usb-usb-0:2.2:1.0-port0'
+
+
+def mount_yaw(share):
+    """laser_yaw from config/lidar_mount.yaml (pi if it is missing or unreadable)."""
+    try:
+        with open(os.path.join(share, 'config', 'lidar_mount.yaml')) as f:
+            return float(yaml.safe_load(f)['laser_yaw'])
+    except (OSError, KeyError, TypeError, ValueError, yaml.YAMLError):
+        return 3.14159
 
 
 def generate_launch_description():
@@ -40,7 +52,7 @@ def generate_launch_description():
         DeclareLaunchArgument('laser_x', default_value='0.0'),
         DeclareLaunchArgument('laser_y', default_value='0.0'),
         DeclareLaunchArgument('laser_z', default_value='0.20'),
-        DeclareLaunchArgument('laser_yaw', default_value='3.14159'),
+        DeclareLaunchArgument('laser_yaw', default_value=str(mount_yaw(share))),
         DeclareLaunchArgument('rviz', default_value='false'),
     ]
 

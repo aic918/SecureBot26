@@ -488,3 +488,128 @@ def test_laps_launch_leaves_the_window_out_for_the_web_panel():
     assert len(mod.laps_window('true')) == 1
     names = [getattr(a, 'name', None) for a in mod.generate_launch_description().entities]
     assert 'panel' in names
+
+
+# ------------------------------------------------------------------------------ panel_urls
+IP_OUTPUT = """1: lo    inet 127.0.0.1/8 scope host lo\\       valid_lft forever
+2: wlP1p1s0    inet 10.115.14.57/24 brd 10.115.14.255 scope global wlP1p1s0\\  valid_lft 2303sec
+8: tailscale0    inet 100.100.137.104/32 scope global tailscale0\\       valid_lft forever
+9: docker0    inet 172.17.0.1/16 brd 172.17.255.255 scope global docker0\\       valid_lft forever
+"""
+
+
+def test_panel_urls_expand_every_network_into_real_addresses():
+    urls = wl.panel_urls('0.0.0.0', 8080, IP_OUTPUT)
+    assert urls == ['http://127.0.0.1:8080  (on the robot itself)',
+                    'http://10.115.14.57:8080  (same network, wlP1p1s0)',
+                    'http://100.100.137.104:8080  (over Tailscale)']
+    assert not any('0.0.0.0' in u or '172.17' in u for u in urls)
+
+
+def test_panel_urls_keep_a_specific_host_and_port():
+    assert wl.panel_urls('127.0.0.1', 9000, IP_OUTPUT) == ['http://127.0.0.1:9000']
+
+
+def test_panel_urls_without_ip_output_still_offer_the_robot_itself():
+    assert wl.panel_urls('0.0.0.0', 8080, '') == ['http://127.0.0.1:8080  (on the robot itself)']
+
+
+# ------------------------------------------------------------------------------ log retention
+def _touch(path, mtime):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    open(path, 'w').close()
+    os.utime(path, (mtime, mtime))
+
+
+def test_prune_runs_keeps_the_newest_runs_with_all_their_files(tmp_path):
+    runs = tmp_path / 'laps_runs'
+    for i in range(14):
+        for prefix, ext in (('run_', 'log'), ('track_', 'csv'), ('events_', 'log')):
+            _touch(str(runs / f'{prefix}2026112{i:02d}.{ext}'), 1000 + i)
+    deleted = wl.prune_runs(str(runs), keep=10)
+    assert sorted(deleted) == [f'2026112{i:02d}' for i in range(4)]
+    left = [r['name'] for r in wl.list_runs(str(runs), limit=None)]
+    assert left == [f'2026112{i:02d}' for i in range(13, 3, -1)]
+    assert len(os.listdir(runs)) == 30                       # 10 runs x 3 files
+
+
+def test_prune_logs_trims_explore_logs_and_colcon_folders_but_not_latest(tmp_path):
+    log = tmp_path / 'log'
+    for i in range(13):
+        _touch(str(log / 'explore_runs' / f'explore_{i:02d}.log'), 1000 + i)
+        d = log / f'build_2026-11-{i + 1:02d}_10-00-00'
+        _touch(str(d / 'events.log'), 1000 + i)
+        os.utime(str(d), (1000 + i, 1000 + i))
+    oldest = log / 'build_2026-11-01_10-00-00'
+    os.symlink(str(oldest), str(log / 'latest_build'))       # odd, but never delete it
+    _touch(str(log / 'laps_runs' / 'run_x.log'), 2000)
+    deleted = wl.prune_logs(str(log), keep=10)
+    assert len(os.listdir(log / 'explore_runs')) == 10
+    builds = sorted(p for p in os.listdir(log) if p.startswith('build_'))
+    assert len(builds) == 11 and oldest.name in builds        # 10 newest + the linked one
+    assert os.path.exists(log / 'laps_runs' / 'run_x.log')
+    assert deleted == 3 + 2
+
+
+def test_starting_a_run_prunes_old_runs_but_keeps_the_new_one(tmp_path):
+    runs = tmp_path / 'laps_runs'
+    for i in range(12):
+        _touch(str(runs / f'run_old{i:02d}.log'), 1000 + i)
+
+    class P:
+        def __init__(self, *a, **k):
+            pass
+
+        def poll(self):
+            return None
+    sm = wl.StackManager(runs_dir=str(runs), tools_dir=str(tmp_path), popen=P, record=False)
+    sm.start('Lab', '/x.yaml', '/dev/null', name='new')
+    names = [r['name'] for r in wl.list_runs(str(runs), limit=None)]
+    assert len(names) == 10 and names[0] == 'new'
+    sm.log_file.close()
+
+
+# ------------------------------------------------------------------------------ last position
+def _run(runs, name, room, poses, mtime):
+    import json as _json
+    with open(runs / f'meta_{name}.json', 'w') as f:
+        _json.dump({'room': room}, f)
+    with open(runs / f'track_{name}.csv', 'w') as f:
+        f.write('t,x,y,yaw,odom_yaw,path_id,state,loop,message\n')
+        for i, (x, y) in enumerate(poses):
+            f.write(f'{i},{x},{y},0,0,1,running,1,"x"\n')
+    for p in runs.glob(f'*_{name}.*'):
+        os.utime(p, (mtime, mtime))
+
+
+def test_last_pose_is_where_the_newest_run_in_that_room_ended(tmp_path):
+    runs = tmp_path / 'laps_runs'
+    runs.mkdir()
+    _run(runs, 'a', 'Lab', [(0, 0), (1.0, 2.0)], 1000)
+    _run(runs, 'b', 'Hall', [(5.0, 5.0)], 2000)                   # newer, other room
+    _run(runs, 'c', 'Lab', [(0, 0), (-3.1, 2.4), (0.0, 0.0)], 1500)
+    assert wl.last_pose(str(runs), 'Lab') == (-3.1, 2.4)          # ignores the 0,0 rows
+    assert wl.last_pose(str(runs), 'Hall') == (5.0, 5.0)
+    assert wl.last_pose(str(runs), 'Nowhere') is None
+
+
+def test_launch_command_passes_the_last_position():
+    cmd = wl.launch_command('/m/a.yaml', 'Lab', ESP, near=(-3.1, 2.4))
+    assert 'localize_near:=-3.10,2.40' in cmd
+    assert not any(c.startswith('localize_near') for c in wl.launch_command('/m', 'L', ESP))
+
+
+def test_starting_a_run_records_its_room(tmp_path):
+    runs = tmp_path / 'laps_runs'
+
+    class P:
+        def __init__(self, *a, **k):
+            pass
+
+        def poll(self):
+            return None
+    sm = wl.StackManager(runs_dir=str(runs), tools_dir=str(tmp_path), popen=P, record=False)
+    sm.start('Lab', '/x.yaml', '/dev/null', name='r1')
+    import json as _json
+    assert _json.load(open(runs / 'meta_r1.json'))['room'] == 'Lab'
+    sm.log_file.close()

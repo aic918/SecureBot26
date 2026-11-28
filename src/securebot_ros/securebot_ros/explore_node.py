@@ -18,6 +18,7 @@ import time
 import cv2
 import numpy as np
 import rclpy
+from rcl_interfaces.msg import SetParametersResult
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from geometry_msgs.msg import Point, PointStamped, Twist
@@ -47,6 +48,15 @@ class ExploreNode(Node):
         self.machine = ExploreMachine()
         self.declare_parameter('coverage_goal', self.machine.p.coverage_goal)
         self.machine.p.coverage_goal = float(self.get_parameter('coverage_goal').value)
+        # driving speeds, changeable while it runs:
+        #   ros2 param set /explore_node drive_speed 0.3
+        # (the ESP32 holds the wheels at this speed with the encoders; the bridge caps it at
+        # max_linear_mps, 0.35 m/s)
+        self.declare_parameter('drive_speed', self.machine.p.drive_speed)      # m/s
+        self.declare_parameter('turn_speed', self.machine.p.turn_speed)        # rad/s, on the spot
+        self.machine.p.drive_speed = float(self.get_parameter('drive_speed').value)
+        self.machine.p.turn_speed = float(self.get_parameter('turn_speed').value)
+        self.add_on_set_parameters_callback(self.on_set_parameters)
         # room:=<name>: when the room is scanned, save the map and file it under that name
         self.declare_parameter('room', '')
         self.declare_parameter('maps_dir', rs.DEFAULT_MAPS_DIR)
@@ -100,6 +110,27 @@ class ExploreNode(Node):
         self.get_logger().info('Explore node ready: waiting for Start')
 
     # ---------------------------------------------------------------- inputs
+
+    def on_set_parameters(self, params):
+        """drive_speed / turn_speed take effect at once (between 0.05 and 0.35 m/s, 0.2 and
+        1.5 rad/s); the other parameters only at start."""
+        limits = {'drive_speed': (0.05, 0.35), 'turn_speed': (0.2, 1.5)}
+        for prm in params:
+            if prm.name in limits:
+                lo, hi = limits[prm.name]
+                try:
+                    value = float(prm.value)
+                except (TypeError, ValueError):
+                    return SetParametersResult(successful=False, reason='not a number')
+                if not lo <= value <= hi:
+                    return SetParametersResult(successful=False,
+                                               reason=f'{prm.name} must be {lo}..{hi}')
+        for prm in params:
+            if prm.name in limits:
+                setattr(self.machine.p, prm.name, float(prm.value))
+                self.get_logger().info(f'{prm.name} = {float(prm.value):g}')
+        return SetParametersResult(successful=True)
+
     def map_callback(self, msg):
         i = msg.info
         if self.grid is not None and i.width * i.height < 0.5 * self.grid.width * self.grid.height:

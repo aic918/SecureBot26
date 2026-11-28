@@ -144,7 +144,14 @@ def main(args=None):
     app = wl.PanelApp(bridge)
     server = wl.make_server(app, opts.host, opts.port, static_dir())
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    bridge.get_logger().info(f'SecureBot panel on http://{opts.host}:{opts.port}')
+    log = bridge.get_logger()
+    pruned = wl.prune_logs()
+    if pruned:
+        log.info(f'Deleted {pruned} old logs from log/ '
+                 f'(keeping the {wl.KEEP_LOGS} newest of each)')
+    log.info('SecureBot panel is up. Open one of these in a browser (not 0.0.0.0):')
+    for url in wl.local_panel_urls(opts.host, opts.port):
+        log.info(f'  {url}')
     try:
         rclpy.spin(bridge)
     except (KeyboardInterrupt, ExternalShutdownException):

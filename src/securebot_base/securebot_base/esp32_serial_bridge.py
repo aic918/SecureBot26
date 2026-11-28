@@ -3,13 +3,17 @@
 
 Inputs
   /esp32/mode  std_msgs/String  stop | patrol | drive   (published by motion_manager_node)
-  /cmd_vel     geometry_msgs/Twist                       used only in drive mode
+  /cmd_vel     geometry_msgs/Twist                       used only in drive mode: sent as
+               wheel speeds (V, speed_control:=true, default) or PWM (M)
 Outputs
   /ultrasonic/left, /ultrasonic/right  sensor_msgs/Range  (no echo -> +inf, REP-117)
   /esp32/status  std_msgs/String  the firmware's `S,<mode>,<l>,<r>,<avoid>` line, without "S,"
   /imu           sensor_msgs/Imu  heading from the MPU-6050 gyro (`G,<yaw_deg>,<rate_dps>`):
                  yaw (integrated since the ESP32 started, so it drifts slowly) and yaw rate,
                  in base_link; imu_yaw_sign:=-1.0 if the board is mounted upside down
+  /wheel_ticks   std_msgs/Int64MultiArray  [left, right] wheel encoder counts since the ESP32
+                 started (`W,<left>,<right>`, + = that wheel forward); they restart at 0 when
+                 the ESP32 restarts
 
 Safety: the current command is resent every `heartbeat_period` (the firmware stops on its own
 after 250 ms without one). A mode or /cmd_vel older than `command_timeout` counts as "stop",
@@ -27,7 +31,7 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import Imu, Range
-from std_msgs.msg import String
+from std_msgs.msg import Int64MultiArray, String
 import serial
 
 MODES = ('stop', 'patrol', 'drive')
@@ -59,22 +63,48 @@ def twist_to_pwm(linear, angular, max_linear_mps, max_angular_rps, wheel_base_m,
     return to_pwm(left), to_pwm(right)
 
 
-def choose_command(mode, mode_age, cmd, cmd_age, timeout, pwm_args):
-    """What to send to the ESP32 now. Stale mode -> stop; drive with a stale /cmd_vel -> M,0,0."""
+def twist_to_tps(linear, angular, max_linear_mps, max_angular_rps, wheel_base_m,
+                 ticks_per_meter, min_tps=0):
+    """Differential-drive Twist -> (left, right) wheel speeds in encoder ticks/s, for the
+    firmware's speed loop (V command). A wheel that should turn but would get under min_tps is
+    lifted to it (the loop cannot hold a crawl), keeping its sign."""
+    linear = clamp(linear, -max_linear_mps, max_linear_mps)
+    angular = clamp(angular, -max_angular_rps, max_angular_rps)
+    out = []
+    for v in (linear - angular * wheel_base_m / 2.0, linear + angular * wheel_base_m / 2.0):
+        t = v * ticks_per_meter
+        if 0 < abs(t) < min_tps:
+            t = math.copysign(min_tps, t)
+        out.append(int(round(t)))
+    return out[0], out[1]
+
+
+def choose_command(mode, mode_age, cmd, cmd_age, timeout, pwm_args, speed_args=None):
+    """What to send to the ESP32 now. Stale mode -> stop; drive with a stale /cmd_vel -> M,0,0
+    (V,0,0 with speed control). With speed_args (twist_to_tps after the twist) the wheels get
+    speeds (V,l,r) for the firmware's speed loop instead of PWM (M,l,r)."""
     if mode not in MODES or mode_age > timeout or mode == 'stop':
         return 'stop'
     if mode == 'patrol':
         return 'patrol'
     if cmd is None or cmd_age > timeout:
-        return 'M,0,0'
+        return 'V,0,0' if speed_args else 'M,0,0'
+    if speed_args:
+        left, right = twist_to_tps(cmd[0], cmd[1], *speed_args)
+        return f'V,{left},{right}'
     left, right = twist_to_pwm(cmd[0], cmd[1], *pwm_args)
     return f'M,{left},{right}'
 
 
 def parse_line(line):
-    """('U', left_ft, right_ft) | ('G', yaw_deg, rate_dps) | ('S', 'drive,90,90,0') |
-    ('I'/'E', text) | None."""
+    """('U', left_ft, right_ft) | ('G', yaw_deg, rate_dps) | ('W', left_ticks, right_ticks) |
+    ('S', 'drive,90,90,0') | ('I'/'E', text) | None."""
     parts = line.split(',')
+    if parts[0] == 'W' and len(parts) == 3:
+        try:
+            return 'W', int(parts[1]), int(parts[2])
+        except ValueError:
+            return None
     if parts[0] in ('U', 'G') and len(parts) == 3:
         try:
             return parts[0], float(parts[1]), float(parts[2])
@@ -106,34 +136,43 @@ class ESP32SerialBridge(Node):
         # LiDAR, which uses the same CP2102 adapter with the same serial number.
         self.declare_parameter('port', '/dev/serial/by-path/platform-3610000.usb-usb-0:2.4:1.0-port0')
         self.declare_parameter('baudrate', 115200)
-        # PWM is 10-bit duty (0-1023) at 10 kHz. The robot needs ~650 to start from standstill
-        # (tuned with tools/motor_tune.py); 665 (2026-11-06: 670 was too fast, so 660;
-        # 2026-11-08: raised to 665) is both the floor for any wheel that should turn and the
-        # ceiling: the robot drives at one speed and steers/stops.
-        self.declare_parameter('max_pwm', 665)
-        self.declare_parameter('min_pwm', 665)          # deadband floor for M,l,r (0 = off)
+        # PWM is 10-bit duty (0-1023) at 10 kHz, on a DRV8262 driver since 2026-11-22. Measured
+        # by spinning in place (gyro): nothing below ~550, ~13 deg/s at 560, ~45 at 575-580,
+        # ~65 at 600, ~90 at 620, ~118 at 655. So 575 is the floor for any wheel that should turn
+        # (a 0.8 rad/s turn lands there) and 655 (the firmware's cap) the ceiling.
+        self.declare_parameter('max_pwm', 655)
+        self.declare_parameter('min_pwm', 575)          # deadband floor for M,l,r (0 = off)
         # slow requests (correction spins) are lifted only to gentle_pwm (0 = off), see
-        # twist_to_pwm; 300 sits above a 0.45 rad/s correction spin (~190) and a slow 0.1 m/s
-        # approach with steering (~190 + up to ~85) and below a 0.8 rad/s turn (~330) or
-        # driving at 0.2 m/s (~380)
-        self.declare_parameter('gentle_pwm', 610)
+        # twist_to_pwm; 300 sits above a 0.45 rad/s correction spin (~185) and below a 0.8 rad/s
+        # turn (~330) or driving at 0.2 m/s (~375). 565 spins ~20 deg/s.
+        self.declare_parameter('gentle_pwm', 565)
         self.declare_parameter('gentle_below', 300)
-        self.declare_parameter('max_linear_mps', 0.35)
+        self.declare_parameter('max_linear_mps', 0.6)     # laps 0.56 m/s (1.25 mph), 2026-11-22
         self.declare_parameter('max_angular_rps', 1.5)
         # Drive wheels 72 mm wide, 368 mm apart inside edge to inside edge -> 440 mm centre to
         # centre (measured 2026-10-26). Wheel diameter 192 mm (used once encoders give odometry).
         self.declare_parameter('wheel_base_m', 0.44)
-        self.declare_parameter('patrol_speed', 665)     # PWM the firmware's own patrol uses
+        self.declare_parameter('patrol_speed', 655)     # PWM the firmware's own patrol uses
         self.declare_parameter('heartbeat_period', 0.1)     # firmware watchdog is 250 ms
         self.declare_parameter('command_timeout', 0.5)
         self.declare_parameter('silence_reset', 3.0)    # s without a line -> restart the ESP32
         self.declare_parameter('imu_yaw_sign', 1.0)     # -1.0: IMU board mounted upside down
+        # Wheel speed control (firmware V command, 2026-11-22): /cmd_vel becomes wheel speeds in
+        # encoder ticks/s and the ESP32 holds each wheel at its speed with the encoders (the two
+        # motors differ by up to 50 % at the same PWM). false: open-loop PWM (M command) with
+        # the min/max/gentle_pwm settings above. ticks_per_meter: same as heading_odom_node's.
+        self.declare_parameter('speed_control', True)
+        self.declare_parameter('ticks_per_meter', 1190.0)   # measured, see heading_odom_node
+        self.declare_parameter('min_wheel_tps', 40)     # slowest wheel speed asked for (~3.5 cm/s)
 
         p = lambda name: self.get_parameter(name).value  # noqa: E731
         self.port = p('port')
         self.pwm_args = (float(p('max_linear_mps')), float(p('max_angular_rps')),
                          float(p('wheel_base_m')), int(p('max_pwm')), int(p('min_pwm')),
                          int(p('gentle_pwm')), int(p('gentle_below')))
+        self.speed_args = (float(p('max_linear_mps')), float(p('max_angular_rps')),
+                           float(p('wheel_base_m')), float(p('ticks_per_meter')),
+                           int(p('min_wheel_tps'))) if p('speed_control') else None
         self.patrol_speed = int(p('patrol_speed'))
         self.timeout = float(p('command_timeout'))
         self.silence_reset = float(p('silence_reset'))
@@ -159,6 +198,7 @@ class ESP32SerialBridge(Node):
         self.right_pub = self.create_publisher(Range, '/ultrasonic/right', 10)
         self.status_pub = self.create_publisher(String, '/esp32/status', 10)
         self.imu_pub = self.create_publisher(Imu, '/imu', 20)
+        self.ticks_pub = self.create_publisher(Int64MultiArray, '/wheel_ticks', 20)
         self.create_timer(float(p('heartbeat_period')), self.send_current_command)
         self.create_timer(1.0, self.check_silence)
 
@@ -219,7 +259,7 @@ class ESP32SerialBridge(Node):
     def send_current_command(self):
         now = time.monotonic()
         command = choose_command(self.mode, now - self.mode_time, self.cmd, now - self.cmd_time,
-                                 self.timeout, self.pwm_args)
+                                 self.timeout, self.pwm_args, self.speed_args)
         self.write_line(command)          # every period: this is the watchdog heartbeat
         if command != self.last_sent:
             self.get_logger().info(f'ESP32 <- {command}')
@@ -260,6 +300,8 @@ class ESP32SerialBridge(Node):
                 self.publish_range(self.right_pub, parsed[2], 'right_ultrasonic')
             elif parsed[0] == 'G':
                 self.publish_imu(parsed[1], parsed[2])
+            elif parsed[0] == 'W':
+                self.ticks_pub.publish(Int64MultiArray(data=[parsed[1], parsed[2]]))
             elif parsed[0] == 'S':
                 self.status_pub.publish(String(data=parsed[1]))
             elif parsed[0] == 'E':

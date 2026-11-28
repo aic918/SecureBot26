@@ -1,7 +1,8 @@
 """Pure logic of esp32_serial_bridge (no serial port, no ROS spin)."""
 import math
 
-from securebot_base.esp32_serial_bridge import choose_command, parse_line, twist_to_pwm
+from securebot_base.esp32_serial_bridge import (
+    choose_command, parse_line, twist_to_pwm, twist_to_tps)
 
 PWM_ARGS = (0.35, 1.5, 0.22, 150)       # max m/s, max rad/s, wheel base, max PWM
 T = 0.5
@@ -36,6 +37,8 @@ def test_drive_uses_fresh_cmd_vel_and_zeroes_stale_one():
 
 def test_parse_lines():
     assert parse_line('U,1.25,-1.00') == ('U', 1.25, -1.0)
+    assert parse_line('W,655,-526') == ('W', 655, -526)
+    assert parse_line('W,1.5,2') is None
     assert parse_line('S,drive,90,90,0') == ('S', 'drive,90,90,0')
     assert parse_line('E,watchdog: no command, stopped') == ('E', 'watchdog: no command, stopped')
     assert parse_line('U,abc,1') is None
@@ -80,3 +83,27 @@ def test_slow_approach_with_steering_stays_gentle():
     assert max(abs(left), abs(right)) == 610
     assert twist_to_pwm(0.2, 0.0, *args) == (660, 660)        # normal driving
     assert twist_to_pwm(0.0, 0.8, *args) == (-660, 660)       # normal turn
+
+
+# ------------------------------------------------------------------------------ speed control
+SPEED_ARGS = (0.35, 1.5, 0.44, 1150.0, 40)     # max lin, max ang, wheel base, ticks/m, min t/s
+
+
+def test_twist_to_wheel_speeds():
+    assert twist_to_tps(0.2, 0.0, *SPEED_ARGS) == (230, 230)
+    assert twist_to_tps(-0.2, 0.0, *SPEED_ARGS) == (-230, -230)
+    left, right = twist_to_tps(0.0, 0.8, *SPEED_ARGS)          # spin left: 0.176 m/s per wheel
+    assert (left, right) == (-202, 202)
+    assert twist_to_tps(0.2, -0.31, *SPEED_ARGS) == (308, 152)  # a curve: both wheels turn
+
+
+def test_slow_wheels_are_lifted_to_the_minimum_and_clamped():
+    assert twist_to_tps(0.01, 0.0, *SPEED_ARGS) == (40, 40)
+    assert twist_to_tps(0.0, 0.0, *SPEED_ARGS) == (0, 0)
+    assert twist_to_tps(5.0, 0.0, *SPEED_ARGS) == (402, 402)    # max_linear 0.35 m/s
+
+
+def test_speed_control_sends_v_commands():
+    assert choose_command('drive', 0.1, (0.2, 0.0), 0.1, T, PWM_ARGS, SPEED_ARGS) == 'V,230,230'
+    assert choose_command('drive', 0.1, (0.2, 0.0), 0.6, T, PWM_ARGS, SPEED_ARGS) == 'V,0,0'
+    assert choose_command('stop', 0.1, (0.2, 0.0), 0.1, T, PWM_ARGS, SPEED_ARGS) == 'stop'

@@ -56,7 +56,8 @@ class Params:
     margin = 0.05
     straight_margin = 0.02        # m beside the wheels that must be clear to drive straight
     stop_distance = FOOT          # ultrasonic / LiDAR stop distance from the front edge
-    drive_speed = 0.2             # m/s requested (the bridge lifts it to the start power)
+    drive_speed = 0.2             # m/s: the ESP32 holds the wheels at it with the encoders
+    #                               (the steering below is tuned for this speed)
     approach_speed = 0.1          # m/s for the last approach_slow m before a stop: the bridge
     approach_slow = 0.35          # lifts it only to its gentle PWM (~610), less overshoot
     waypoint_slow = 0.2032        # m (8 in): also slow down this far before every waypoint

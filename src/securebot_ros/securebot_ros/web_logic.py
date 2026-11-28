@@ -21,6 +21,7 @@ send_command(cmd), click(x, y) and snapshot() -> dict.
 import glob
 import json
 import os
+import shutil
 import signal
 import subprocess
 import threading
@@ -35,7 +36,9 @@ from securebot_ros.web_faces import FaceEnroller
 
 WS = os.path.expanduser('~/securebot_ws')
 MAPS_DIR = os.path.join(WS, 'maps')
-RUNS_DIR = os.path.join(WS, 'log', 'laps_runs')
+LOG_DIR = os.path.join(WS, 'log')
+RUNS_DIR = os.path.join(LOG_DIR, 'laps_runs')
+KEEP_LOGS = 10                # newest runs / log files / build logs kept in log/ (prune_logs)
 TOOLS_DIR = os.path.join(WS, 'tools')
 SERIAL_DIR = '/dev/serial/by-path'
 LIDAR_PORT = '/dev/serial/by-path/platform-3610000.usb-usb-0:2.2:1.0-port0'
@@ -105,14 +108,42 @@ def other_stack_running(ps_output):
 
 
 # ------------------------------------------------------------------------------ the stack
-def launch_command(yaml_path, room, port, home='', rounds=0):
-    """The laps launch, as the panel runs it: no RViz, no Tk window, auto-localize."""
+def launch_command(yaml_path, room, port, home='', rounds=0, near=None):
+    """The laps launch, as the panel runs it: no RViz, no Tk window, auto-localize (looking
+    near `near` (x, y) first: where the last run in this room ended)."""
     cmd = ['ros2', 'launch', 'securebot_ros', 'securebot_laps.launch.py',
            f'map:={yaml_path}', f'room:={room}', f'esp32_port:={port}',
            'rviz:=false', 'panel:=web', 'auto_localize:=true', f'rounds:={int(rounds)}']
     if home:
         cmd.append(f'home:={home}')
+    if near is not None:
+        cmd.append(f'localize_near:={near[0]:.2f},{near[1]:.2f}')
     return cmd
+
+
+def last_pose(runs_dir, room):
+    """(x, y) where the newest recorded run in `room` ended (meta_<run>.json names the room,
+    track_<run>.csv the poses), or None."""
+    for r in list_runs(runs_dir, limit=None):
+        meta = os.path.join(runs_dir, f'meta_{r["name"]}.json')
+        track = os.path.join(runs_dir, f'track_{r["name"]}.csv')
+        try:
+            with open(meta) as f:
+                if json.load(f).get('room') != room:
+                    continue
+            with open(track) as f:
+                lines = f.read().strip().splitlines()
+        except (OSError, ValueError):
+            continue
+        for line in reversed(lines[1:]):
+            parts = line.split(',')
+            try:
+                x, y = float(parts[1]), float(parts[2])
+            except (IndexError, ValueError):
+                continue
+            if (x, y) != (0.0, 0.0):              # 0,0 = the track before localizing
+                return x, y
+    return None
 
 
 def parse_home(text):
@@ -153,7 +184,7 @@ class StackManager:
         self.log_file = None
         self._loc_path, self._loc_offset, self._loc = None, 0, (None, '')
 
-    def start(self, room, yaml_path, port, home='', rounds=0, name=None):
+    def start(self, room, yaml_path, port, home='', rounds=0, name=None, near=None):
         with self.lock:
             if self.state in ('starting', 'running', 'stopping'):
                 raise RuntimeError(f'The robot is already {self.state}')
@@ -161,7 +192,10 @@ class StackManager:
             self.run_name = name or time.strftime('%Y%m%d_%H%M%S')
             self.log_path = os.path.join(self.runs_dir, f'run_{self.run_name}.log')
             self.log_file = open(self.log_path, 'w')
-            self.proc = self.popen(launch_command(yaml_path, room, port, home, rounds),
+            with open(os.path.join(self.runs_dir, f'meta_{self.run_name}.json'), 'w') as f:
+                json.dump({'room': room, 'map': yaml_path}, f)
+            prune_runs(self.runs_dir)             # the new run is the newest: it is kept
+            self.proc = self.popen(launch_command(yaml_path, room, port, home, rounds, near),
                                    stdout=self.log_file, stderr=subprocess.STDOUT,
                                    stdin=subprocess.DEVNULL, start_new_session=True)
             self.recorder = None
@@ -255,13 +289,60 @@ class StackManager:
         return self._loc
 
 
+RUN_PREFIXES = ('run_', 'track_', 'imu_cmd_', 'paths_', 'events_', 'meta_')
+
+
+def prune_runs(runs_dir=RUNS_DIR, keep=KEEP_LOGS):
+    """Delete all but the `keep` newest runs (each run's files together). Returns the names
+    of the runs deleted."""
+    old = list_runs(runs_dir, limit=None)[keep:]
+    for r in old:
+        for f in r['files']:
+            try:
+                os.remove(os.path.join(runs_dir, f))
+            except OSError:
+                pass
+    return [r['name'] for r in old]
+
+
+def prune_logs(log_dir=LOG_DIR, keep=KEEP_LOGS):
+    """Keep only the `keep` newest of each kind of log in log/: laps runs (laps_runs/, a run's
+    files together), files in explore_runs/, and colcon's build_* and test_* folders (never one
+    that latest / latest_build / latest_test points to). Returns how many were deleted."""
+    if not os.path.isdir(log_dir):
+        return 0
+    deleted = len(prune_runs(os.path.join(log_dir, 'laps_runs'), keep))
+    explore = os.path.join(log_dir, 'explore_runs')
+    files = sorted((p for p in glob.glob(os.path.join(explore, '*')) if os.path.isfile(p)),
+                   key=os.path.getmtime, reverse=True)
+    for path in files[keep:]:
+        try:
+            os.remove(path)
+            deleted += 1
+        except OSError:
+            pass
+    linked = {os.path.realpath(os.path.join(log_dir, n))
+              for n in ('latest', 'latest_build', 'latest_test')
+              if os.path.islink(os.path.join(log_dir, n))}
+    for kind in ('build_', 'test_'):
+        dirs = sorted((p for p in glob.glob(os.path.join(log_dir, kind + '*'))
+                       if os.path.isdir(p) and not os.path.islink(p)),
+                      key=os.path.getmtime, reverse=True)
+        for path in dirs[keep:]:
+            if os.path.realpath(path) in linked:
+                continue
+            shutil.rmtree(path, ignore_errors=True)
+            deleted += 1
+    return deleted
+
+
 def list_runs(runs_dir=RUNS_DIR, limit=20):
-    """Newest first: [{'name', 'files': [...], 'time'}] grouped by run name."""
+    """Newest first: [{'name', 'files': [...], 'time'}] grouped by run name (limit None: all)."""
     runs = {}
     for path in glob.glob(os.path.join(runs_dir, '*')):
         base = os.path.basename(path)
         stem = os.path.splitext(base)[0]
-        for prefix in ('run_', 'track_', 'imu_cmd_', 'paths_', 'events_'):
+        for prefix in RUN_PREFIXES:
             if stem.startswith(prefix):
                 name = stem[len(prefix):]
                 r = runs.setdefault(name, {'name': name, 'files': [], 'time': 0.0})
@@ -345,7 +426,8 @@ class PanelApp:
         reset = getattr(self.bridge, 'reset', None)
         if reset:
             reset()                       # forget the last run's lanes, boxes and home
-        self.stack.start(room['name'], room['yaml'], port, home, rounds)
+        near = last_pose(self.stack.runs_dir, room['name'])
+        self.stack.start(room['name'], room['yaml'], port, home, rounds, near=near)
         return f'Starting up in {room["name"]}'
 
     def power_off(self):
@@ -382,7 +464,7 @@ class PanelApp:
         self.bridge.send_command('stop')
         self.relocalizing, self.reloc_text = True, 'Finding the robot on the map'
         cmd = ['python3', os.path.join(self.tools_dir, 'global_localize.py'),
-               '--map', room['yaml'], '--tries', '3']
+               '--map', room['yaml'], '--tries', '3', '--turn']
 
         def run():
             try:
@@ -545,6 +627,48 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return self._error(500, f'{type(e).__name__}: {e}')
         return self._send(200, {'ok': True, 'message': text})
+
+
+# interfaces nobody browses from: Docker's bridges and container links
+HIDDEN_IFACES = ('docker', 'br-', 'veth')
+
+
+def panel_urls(host, port, ip_output):
+    """The addresses to open the panel at, as 'http://<ip>:<port>  (<where>)' lines.
+
+    `ip_output` is `ip -o -4 addr show`. A host of 0.0.0.0 (every network) is not an address
+    a browser can open, so it is expanded into this machine's own (127.0.0.1) and one line
+    per network interface, leaving out Docker's."""
+    if host not in ('0.0.0.0', ''):
+        return [f'http://{host}:{port}']
+    urls = []
+    for line in ip_output.splitlines():
+        parts = line.split()
+        if len(parts) < 4 or parts[2] != 'inet':
+            continue
+        iface, ip = parts[1], parts[3].split('/')[0]
+        if iface.startswith(HIDDEN_IFACES):
+            continue
+        if iface == 'lo':
+            where = 'on the robot itself'
+        elif iface.startswith('tailscale'):
+            where = 'over Tailscale'
+        else:
+            where = f'same network, {iface}'
+        urls.append((iface != 'lo', f'http://{ip}:{port}  ({where})'))
+    if not any(not remote for remote, _ in urls):
+        urls.append((False, f'http://127.0.0.1:{port}  (on the robot itself)'))
+    return [u for _, u in sorted(urls, key=lambda r: r[0])]
+
+
+def local_panel_urls(host, port):
+    """panel_urls() for this machine's interfaces."""
+    try:
+        out = subprocess.run(['ip', '-o', '-4', 'addr', 'show'], capture_output=True,
+                             text=True, timeout=5).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        out = ''
+    return panel_urls(host, port, out)
 
 
 def make_server(app, host='0.0.0.0', port=8080, static_dir=None):

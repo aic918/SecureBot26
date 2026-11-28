@@ -1,0 +1,5 @@
+# How the LiDAR is turned on the robot: laser_yaw (rad) is the turn from base_link (x = the
+# robot's front, the way the motors drive "forward") to the LiDAR's own frame.
+# securebot_lidar.launch.py reads it. Measure it, do not guess it from the tower's shadow:
+#   ros2 launch securebot_ros securebot_find_front.launch.py save:=true
+laser_yaw: 3.12659   # measured -0.015 against the old forward; + pi after the firmware front flip (FRONT_FLIPPED), 2026-11-22

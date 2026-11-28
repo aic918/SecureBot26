@@ -11,6 +11,10 @@
     {
       "name": "ENGR Hallway",
       "map": "engr_hallway_1107_1853"
+    },
+    {
+      "name": "Student Services 2nd Floor",
+      "map": "student_services_2nd_flo_1122_2105"
     }
   ]
 }
